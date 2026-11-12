@@ -23,12 +23,6 @@ export function createToolTabHistory() {
       }
       return live[0];
     },
-    next(sessionId, kind, tabs, activeId) {
-      const live = candidates(sessionId, kind, tabs);
-      if (!live.length) return undefined;
-      const index = live.findIndex(tab => tab.tabId === activeId);
-      return live[(index + 1) % live.length];
-    },
     reconcile(tabs) {
       for (const [sessionId, history] of sessions) {
         for (const [kind, ids] of history) {

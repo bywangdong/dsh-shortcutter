@@ -17,7 +17,7 @@ export function nativeNavigationKey(element, code) {
   return !!element?.closest?.('button, input, select, a[href], summary, [role="button"], [role="checkbox"], [role="radio"], [role="switch"], [role="tab"], [role="slider"], [role="treeitem"]');
 }
 
-export function readNavigationContext(doc, { enabled = true, composing = false } = {}) {
+export function readNavigationContext(doc, { enabled = true, composing = false, nativeWebviewTarget = null } = {}) {
   const active = doc.activeElement;
   const visible = element => element.isConnected && !!element.getClientRects().length
     && doc.defaultView.getComputedStyle(element).visibility !== 'hidden';
@@ -25,7 +25,12 @@ export function readNavigationContext(doc, { enabled = true, composing = false }
   const modals = [...doc.querySelectorAll('dialog[open], [role="dialog"][aria-modal="true"], [role="alertdialog"][aria-modal="true"]')].filter(visible);
   const top = modals.findLast(element => element.matches('dialog:modal')) || modals.at(-1);
   const scope = top?.matches('[data-shortcut-modal="settings"], [data-sc-navigation-dialog]') ? top : null;
-  const reason = doc.hidden || !doc.hasFocus() ? 'inactive'
+  // A focused native WebView can make the outer document report no focus.
+  // Only an explicit host-verified WebView command may cross that boundary;
+  // ordinary observation and DOM keys must still treat it as inactive.
+  const embeddedReturn = nativeWebviewTarget === active
+    && active?.matches('webview[data-sidebar-browser-frame]') && visible(active);
+  const reason = doc.hidden || (!doc.hasFocus() && !embeddedReturn) ? 'inactive'
     : menus.length ? 'menu'
     : top && !scope ? 'modal'
     : composing ? 'composition'

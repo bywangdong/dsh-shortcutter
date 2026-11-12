@@ -1,14 +1,17 @@
 // Stable compatibility identifiers: keep existing custom return keys and
 // local preferences when upgrading from dsh-magic-shortcuts to dsh-shortcutter.
 export const RETURN_ID = "magic-shortcuts.navigate";
+// A second, independently editable return command. macOS may claim ⌘ Esc
+// before it reaches the app (Game Overlay), so a fallback is always bound.
+export const RETURN_ALT_ID = "shortcutter.navigate.alternate";
 export const STORAGE_KEY = "dsh.magic-shortcuts.v1";
 export const COMMANDS = [
   { id: "sidebar", label: "切换侧栏", key: "s", group: "区域" },
   { id: "conversation", label: "回到对话", key: "c", group: "区域" },
   { id: "right", label: "切换工具面板", key: "r", group: "区域" },
   { id: "files", label: "文件", key: "e", group: "区域" },
-  { id: "browser", label: "切换浏览器", key: "b", group: "区域" },
-  { id: "terminal", label: "切换终端", key: "t", group: "区域" },
+  { id: "browser", label: "打开浏览器", key: "b", group: "区域" },
+  { id: "terminal", label: "打开终端", key: "t", group: "区域" },
   { id: "enter", label: "进入当前内容", key: "i", group: "操作" },
   { id: "newSession", label: "新建会话", key: "n", group: "操作" },
   { id: "newBrowser", label: "新建浏览器", key: "B", group: "操作" },

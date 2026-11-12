@@ -2,10 +2,14 @@
 // public host contract. It never loads DSH accounts, storage or embedded tools.
 export const html = `<!doctype html><meta charset="utf-8"><style>
 body{margin:0}#frame{display:flex;height:800px}#sidebar{width:200px}#conversation{width:600px}#right{width:400px}
-#log{height:600px;overflow:auto}[data-shell-overlay]{position:fixed;inset:0;pointer-events:none}
+#log{height:600px;overflow:auto}[data-shell-overlay]{position:fixed;inset:0;z-index:20;pointer-events:none}
+#frame[data-rightbar-fullscreen] [data-dockkit-pane]{position:fixed;inset:0;z-index:40;background:white}
+/* Like DSH's body portal rule, native drag exclusion is inherited. */
+body>:not(#frame){-webkit-app-region:no-drag}
 </style><div id="frame"><aside id="sidebar">Sessions</aside><main id="conversation"><input id="composer" value="draft"><button id="ordinary">Ordinary button</button><div id="log"></div></main><aside id="right" data-rightbar-col data-sidebar-right-open="true"><div data-sidebar-right-session="s1" data-sidebar-right-panel="dock"><div data-dockkit-strip></div><div data-dockkit-pane="p1"></div></div></aside><div data-shell-overlay id="overlay"></div></div>`;
 
-export function setup({ instrument = false, openState = 'open', nodes = 2000 } = {}) {
+export function setup({ instrument = false, openState = 'open', nodes = 2000,
+  initialTabs = [{ sessionId: 's1', tabId: 'b1', kind: 'browser' }], activeTabId = initialTabs[0]?.tabId } = {}) {
   window.counts = {};
   window.count = key => { window.counts[key] = (window.counts[key] || 0) + 1; };
   if (instrument) {
@@ -26,8 +30,8 @@ export function setup({ instrument = false, openState = 'open', nodes = 2000 } =
   const session = store({ openState, running: false });
   const terminal = store({ writable: false, phase: 'opening' });
   const mounted = store('s1');
-  const openTabs = store([{ sessionId: 's1', tabId: 'b1', kind: 'browser' }]);
-  let currentId = 'b1', expanded = true, occurrence = {}, navigationRevision = 0, serial = 1;
+  const openTabs = store(initialTabs);
+  let currentId = activeTabId, expanded = true, occurrence = {}, navigationRevision = 0, serial = 1;
   const active = () => {
     const tab = openTabs.getSnapshot().find(t => t.sessionId === mounted.getSnapshot() && t.tabId === currentId);
     return tab && { id: tab.tabId, kind: tab.kind, contentId: tab.tabId };
@@ -41,12 +45,26 @@ export function setup({ instrument = false, openState = 'open', nodes = 2000 } =
       el.setAttribute('aria-selected', String(tab.tabId === currentId)); el.textContent = tab.kind;
       return el;
     }));
-    const pane = host.querySelector('[data-dockkit-pane]'); pane.dataset.sidebarRightTab = currentId;
-    pane.innerHTML = active()?.kind === 'terminal' ? '<div class="xterm"></div>' : '<form><input id="address" value="draft"><span id="toolbar-blank">toolbar</span></form>';
+    const pane = host.querySelector('[data-dockkit-pane]'); pane.dataset.sidebarRightTab = currentId ?? '';
+    pane.innerHTML = !active() ? '' : active().kind === 'terminal' ? '<div class="xterm"></div>' : '<form><input id="address" value="draft"><span id="toolbar-blank">toolbar</span></form>';
   };
   renderTool();
   const cleanups = [], commands = new Map();
-  const row = { id: 'magic-shortcuts.navigate', keys: ['⌘', 'J'], binding: { code: 'KeyJ' }, conflicts: [] };
+  const defaults = {
+    'magic-shortcuts.navigate': { code: 'Escape', modifiers: ['meta'] },
+    'shortcutter.navigate.alternate': { code: 'Semicolon', modifiers: ['meta', 'shift'] }
+  };
+  const describe = binding => {
+    binding = { ...binding, modifiers: binding.modifiers.map(m => m === 'primary' ? 'meta' : m) };
+    // Like DSH's macOS presentation: ⌃ ⌥ ⇧ ⌘ order regardless of input order.
+    const order = ['control', 'alt', 'shift', 'meta'];
+    return { binding, keys: [...[...binding.modifiers].sort((a, b) => order.indexOf(a) - order.indexOf(b)).map(m => ({ meta: '⌘', shift: '⇧', alt: '⌥', control: '⌃' })[m]), binding.code === 'Escape' ? 'Esc' : binding.code === 'Semicolon' ? ';' : binding.code.replace('Key', '')] };
+  };
+  const catalog = store(Object.entries(defaults).map(([id, binding]) => ({ id, ...describe(binding), modified: false, issue: null, conflicts: [] })));
+  const shortcutConfig = store({ revision: 0 });
+  const native = { recording: false, edits: [], conflicts: [], result: undefined, throws: false };
+  const workspace = { sessionRequested: false, startSession() { workspace.sessionRequested = true; } };
+  let Preferences, preferencesRoot;
   const sidebarRight = {
     mounted, openTabs, active, isExpanded: () => expanded, commandTarget: () => target(),
     isTargetCurrent: captured => captured.sessionId === mounted.getSnapshot() && captured.tabId === currentId
@@ -54,11 +72,16 @@ export function setup({ instrument = false, openState = 'open', nodes = 2000 } =
     focusedTarget: element => element?.closest?.('[data-sidebar-right-session]') ? target() : undefined,
     focus(id) { currentId = id; occurrence = {}; navigationRevision++; renderTool(); },
     openTab(kind) {
-      currentId = kind[0] + (++serial); occurrence = {}; navigationRevision++;
+      do { currentId = kind[0] + (++serial); } while (openTabs.getSnapshot().some(tab => tab.tabId === currentId));
+      occurrence = {}; navigationRevision++;
       openTabs.set([...openTabs.getSnapshot(), { sessionId: mounted.getSnapshot(), tabId: currentId, kind }]);
       renderTool();
     },
     toggleExpanded() { expanded = !expanded; document.getElementById('right').dataset.sidebarRightOpen = String(expanded); },
+    toggleFullscreen() {
+      const fullscreen = document.getElementById('frame').toggleAttribute('data-rightbar-fullscreen');
+      document.querySelector('[data-sidebar-right-panel]').dataset.sidebarRightPanel = fullscreen ? 'fullscreen' : 'dock';
+    },
     canCloseTarget: () => true,
     closeTarget(captured) {
       if (!sidebarRight.isTargetCurrent(captured)) return 'stale';
@@ -72,6 +95,10 @@ export function setup({ instrument = false, openState = 'open', nodes = 2000 } =
     slots: {
       inject(_name, fn) { return fn(); },
       register(spec, Component) {
+        if (spec.name === 'settings.section') {
+          Preferences = Component;
+          return () => { preferencesRoot?.unmount(); Preferences = undefined; };
+        }
         if (spec.name === 'shell.overlay') {
           const root = window.createRoot(document.getElementById('overlay'));
           root.render(window.React.createElement(Component)); return () => root.unmount();
@@ -79,12 +106,28 @@ export function setup({ instrument = false, openState = 'open', nodes = 2000 } =
         return () => {};
       }
     },
-    shortcuts: { catalog: store([row]), register(command) { commands.set(command.id, command); return () => commands.delete(command.id); },
-      observeFixedInput(fn) { window.fixedInput = fn; return () => { window.fixedInput = undefined; }; }, recording: () => Promise.resolve() },
+    shortcuts: { catalog, config: shortcutConfig,
+      describeBinding(binding) {
+        return { ...describe(binding), issue: null, conflicts: native.conflicts };
+      },
+      async edit(operation, revision) {
+        native.edits.push({ operation, revision });
+        if (native.throws) throw Error('Unavailable');
+        if (native.result) return { status: native.result };
+        if (revision !== shortcutConfig.getSnapshot().revision) return { status: 'stale' };
+        const reset = operation.type === 'reset';
+        const binding = reset ? defaults[operation.id] : operation.binding;
+        catalog.set(catalog.getSnapshot().map(row => row.id === operation.id ? { ...row, ...describe(binding), modified: !reset } : row));
+        shortcutConfig.set({ revision: revision + 1 });
+        return { status: 'saved' };
+      },
+      register(command) { commands.set(command.id, command); return () => commands.delete(command.id); },
+      observeFixedInput(fn) { window.fixedInput = fn; return () => { window.fixedInput = undefined; }; },
+      recording(value) { native.recording = value; return Promise.resolve(); } },
     sidebarRight, sessions: { binding: () => ({ session, ctx: {} }) },
     conversation: { input: { for: () => ({ focus: () => document.getElementById('composer').focus() }) } },
     layout: { selectPanel() {}, toggleSidebar() { document.getElementById('frame').toggleAttribute('data-sidebar-collapsed'); } },
-    uiWorkspace: {}, webTerminals: { view: () => ({ state: terminal }) }
+    uiWorkspace: workspace, webTerminals: { view: () => ({ state: terminal }) }
   };
   window.__ModuleLoader__ = { load({ factory }) {
     const plugin = factory(name => name === 'react' ? window.React : name === 'react-dom' ? window.ReactDOM
@@ -99,9 +142,22 @@ export function setup({ instrument = false, openState = 'open', nodes = 2000 } =
       consume() { consumed = true; } });
     return consumed;
   };
+  // The host resets fixed-key sequences on pointer/focus activity before the
+  // plugin observes the resulting navigation transition.
+  for (const type of ['pointerdown', 'focusin']) {
+    document.addEventListener(type, () => window.fixedInput?.({ type: 'reset' }), true);
+  }
   window.fixture = {
-    session, terminal, sidebarRight, emitKey,
-    navigate() { commands.get('magic-shortcuts.navigate').resolve().run?.(); },
+    session, terminal, sidebarRight, emitKey, native, catalog, shortcutConfig, workspace, commands,
+    commitSession(id, openState = 'loading') {
+      session.set({ openState, running: false }); mounted.set(id); renderTool();
+    },
+    preferences() {
+      const dialog = document.createElement('dialog'); dialog.id = 'preferences'; dialog.dataset.shortcutModal = 'settings';
+      document.body.append(dialog); dialog.showModal(); preferencesRoot = window.createRoot(dialog);
+      preferencesRoot.render(window.React.createElement(Preferences));
+    },
+    navigate(context = {}, id = 'magic-shortcuts.navigate') { const result = commands.get(id).resolve(context); result.run?.(); return result.status; },
     invalidateTarget() { occurrence = {}; navigationRevision++; },
     mountTerminal(focus = false) {
       const input = document.createElement('textarea'); input.id = 'terminal-input';

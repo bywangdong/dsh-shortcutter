@@ -8,31 +8,29 @@ test('entering from another area recalls the recent tab',()=>{
   for(let i=0;i<4;i++)assert.equal(history.find('a','browser',tabs,'t1').tabId,'b2');
   history.remember('a','b1',tabs);assert.equal(history.find('a','browser',tabs,'t1').tabId,'b1');
 });
-test('repeated same-kind navigation cycles in supplied strip order and wraps',()=>{
+test('repeated tool navigation keeps the selected tab regardless of strip order',()=>{
   const history=createToolTabHistory();
   const ordered=orderToolTabs(tabs,['b2','t2','b1','t1','b3']);
-  let active='b1';
-  for(const expected of ['b2','b1','b2']) {
-    active=history.next('a','browser',ordered,active).tabId;
-    assert.equal(active,expected);
+  history.remember('a','b2',tabs);
+  for(let i=0;i<4;i++) {
+    assert.equal(history.find('a','browser',ordered,'b1').tabId,'b1');
+    assert.equal(history.find('a','terminal',ordered,'t1').tabId,'t1');
   }
-  assert.equal(history.next('a','terminal',ordered,'t1').tabId,'t2');
-  assert.equal(history.next('a','terminal',ordered,'t2').tabId,'t1');
 });
-test('cycling with zero or one matching tab cannot invent tabs or cross sessions',()=>{
+test('recall with zero or one matching tab cannot invent tabs or cross sessions',()=>{
   const history=createToolTabHistory();
-  assert.equal(history.next('missing','browser',tabs,'b1'),undefined);
-  assert.equal(history.next('b','terminal',tabs,'t1'),undefined);
-  assert.equal(history.next('b','browser',tabs,'b3').tabId,'b3');
-  assert.equal(history.next('b','browser',tabs,'b1').tabId,'b3');
+  assert.equal(history.find('missing','browser',tabs,'b1'),undefined);
+  assert.equal(history.find('b','terminal',tabs,'t1'),undefined);
+  assert.equal(history.find('b','browser',tabs,'b3').tabId,'b3');
+  assert.equal(history.find('b','browser',tabs,'b1').tabId,'b3');
 });
-test('mouse-selected tabs become the cycle origin and removed tabs are skipped',()=>{
+test('mouse-selected tabs stay selected and removed tabs fall back to surviving history',()=>{
   const history=createToolTabHistory();history.remember('a','b2',tabs);
   assert.equal(history.find('a','browser',tabs,'t1').tabId,'b2');
-  assert.equal(history.next('a','browser',tabs,'b2').tabId,'b1');
+  assert.equal(history.find('a','browser',tabs,'b2').tabId,'b2');
   const remaining=tabs.filter(t=>t.tabId!=='b1');
-  assert.equal(history.next('a','browser',remaining,'b2').tabId,'b2');
-  assert.equal(history.next('a','browser',remaining,'b1').tabId,'b2');
+  assert.equal(history.find('a','browser',remaining,'b2').tabId,'b2');
+  assert.equal(history.find('a','browser',remaining,'b1').tabId,'b2');
 });
 test('mouse, keyboard and native selection share recency, scoped to kind and session',()=>{
   const history=createToolTabHistory();history.remember('a','b1',tabs);history.remember('a','t2',tabs);
