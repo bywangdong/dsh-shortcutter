@@ -305,10 +305,24 @@ window.__ModuleLoader__.load({
           } else if (["files", "browser", "terminal"].includes(id)) openTool(id);
           else if (id === "newBrowser" || id === "newTerminal") openTool(id === "newBrowser" ? "browser" : "terminal", true);
           else if (id === "fullscreen") {
-            const captured = currentTarget();
-            if (!captured || !ctx.sidebarRight.isExpanded() || captured.host === "float") throw new Error("先展开右侧面板，再放大或恢复。");
-            ctx.sidebarRight.toggleFullscreen(captured);
-            area = tabs().find(t => t.tabId === captured.tabId)?.kind || "right"; target = captured; requestNavigation(target);
+            if (!mounted()) throw new Error("先打开一个会话。");
+            let captured = currentTarget();
+            if (captured?.host === "float") throw new Error("悬浮面板暂不支持放大或恢复。");
+            const opening = !ctx.sidebarRight.isExpanded();
+            if (opening) {
+              ctx.sidebarRight.toggleExpanded();
+              // Expansion commits the pane and may seed its first guide tab.
+              captured = ctx.sidebarRight.commandTarget(null);
+            }
+            if (!captured || !ctx.sidebarRight.isTargetCurrent(captured)) throw new Error("当前面板已变化，请重新选择。");
+            // Reopening can already be fullscreen (remembered mode or a narrow
+            // window). Toggling again would restore or even collapse it.
+            const openedFullscreen = opening && [...document.querySelectorAll('[data-sidebar-right-panel="fullscreen"]')]
+              .some(el => el.getAttribute("data-sidebar-right-session") === mounted());
+            if (!openedFullscreen) ctx.sidebarRight.toggleFullscreen(captured);
+            const expanded = ctx.sidebarRight.isExpanded();
+            area = expanded ? tabs().find(t => t.tabId === captured.tabId)?.kind || "right" : "conversation";
+            target = expanded ? captured : undefined; requestNavigation(target, true);
           } else if (id === "previous") {
             if (!previousSession) throw new Error("还没有上一个会话。");
             area = "conversation"; target = undefined;

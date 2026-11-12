@@ -362,6 +362,77 @@ export async function pluginChecks(createPage) {
     assert.equal(await page.evaluate(() => window.fixture.navigate({ source: 'webview', target: window.testWebview })), 'blocked');
     assert.equal(await page.evaluate(() => window.outerFocusCalls), 0);
   });
+  await check('Shift+R opens a collapsed panel directly in fullscreen and restores it without replacing content', async page => {
+    await ready(page);
+    await page.evaluate(() => { window.originalAddress = document.getElementById('address'); window.originalAddress.value = 'keep this address'; });
+    await key(page, 'KeyR'); await ready(page);
+    assert.equal(await page.evaluate(() => window.fixture.sidebarRight.isExpanded()), false);
+    await key(page, 'KeyR', { shift: true }); await ready(page);
+    assert.equal(await page.evaluate(() => window.fixture.sidebarRight.isExpanded()), true);
+    assert.equal(await page.evaluate(() => document.getElementById('frame').hasAttribute('data-rightbar-fullscreen')), true);
+    assert.equal(await page.evaluate(() => window.pluginState().area), 'browser');
+    assert.equal(await page.locator('.sc-notice').count(), 0);
+    await key(page, 'KeyR', { shift: true }); await ready(page);
+    assert.equal(await page.evaluate(() => document.getElementById('frame').hasAttribute('data-rightbar-fullscreen')), false);
+    assert.equal(await page.evaluate(() => window.fixture.sidebarRight.isExpanded()), true);
+    assert.equal(await page.evaluate(() => document.getElementById('address') === window.originalAddress), true);
+    assert.equal(await page.locator('#address').inputValue(), 'keep this address');
+    assert.equal(await page.evaluate(() => window.fixture.sidebarRight.openTabs.getSnapshot().length), 1);
+  });
+  await check('Shift+R preserves a collapsed panel\'s remembered fullscreen mode when reopening', async page => {
+    await ready(page); await key(page, 'KeyR', { shift: true }); await ready(page);
+    await key(page, 'KeyR'); await ready(page);
+    await key(page, 'KeyR', { shift: true }); await ready(page);
+    assert.equal(await page.evaluate(() => window.fixture.sidebarRight.isExpanded()), true);
+    assert.equal(await page.evaluate(() => document.getElementById('frame').hasAttribute('data-rightbar-fullscreen')), true);
+    assert.equal(await page.locator('.sc-notice').count(), 0);
+  });
+  await check('Shift+R opens an empty panel using the guide target created by expansion', async page => {
+    await ready(page); await key(page, 'KeyR'); await ready(page);
+    await key(page, 'KeyR', { shift: true }); await ready(page);
+    assert.equal(await page.evaluate(() => window.fixture.sidebarRight.active().kind), 'guide');
+    assert.equal(await page.evaluate(() => document.getElementById('frame').hasAttribute('data-rightbar-fullscreen')), true);
+    assert.equal(await page.locator('.sc-notice').count(), 0);
+  }, { initialTabs: [] });
+  await check('Shift+R opens an automatically fullscreen narrow panel and the next press returns to conversation', async page => {
+    await ready(page); await key(page, 'KeyR'); await ready(page);
+    await key(page, 'KeyR', { shift: true }); await ready(page);
+    assert.equal(await page.evaluate(() => window.fixture.sidebarRight.isExpanded()), true);
+    assert.equal(await page.evaluate(() => document.getElementById('frame').hasAttribute('data-rightbar-fullscreen')), true);
+    await key(page, 'KeyR', { shift: true }); await ready(page);
+    assert.equal(await page.evaluate(() => window.fixture.sidebarRight.isExpanded()), false);
+    assert.equal(await page.evaluate(() => window.pluginState().area), 'conversation');
+    assert.equal(await page.locator('.sc-notice').count(), 0);
+  }, { autoFullscreen: true });
+  await check('Shift+R from a collapsed terminal waits for its view and delayed autofocus', async page => {
+    await page.evaluate(() => { window.fixture.terminal.set({ writable: true, phase: 'connected' }); window.fixture.mountTerminal(); });
+    await ready(page); await key(page, 'KeyR'); await ready(page);
+    await page.evaluate(() => document.getElementById('terminal-input').remove());
+    await key(page, 'KeyR', { shift: true }); await settle(page);
+    assert.ok(await page.evaluate(() => window.pluginState().pending));
+    await page.evaluate(() => window.fixture.mountTerminal(true)); await ready(page);
+    assert.equal(await page.evaluate(() => document.getElementById('frame').hasAttribute('data-rightbar-fullscreen')), true);
+    assert.equal(await page.evaluate(() => window.pluginState().area), 'terminal');
+    assert.equal(await page.locator('.sc-notice').count(), 0);
+  }, { initialTabs: [{ sessionId: 's1', tabId: 't1', kind: 'terminal' }] });
+  await check('Shift+R without a session reports the missing session without changing layout', async page => {
+    await ready(page);
+    await page.evaluate(() => window.fixture.commitSession(undefined, 'open')); await ready(page);
+    await key(page, 'KeyR', { shift: true }); await settle(page);
+    assert.equal(await page.locator('.sc-notice').textContent(), '先打开一个会话。');
+    assert.equal(await page.evaluate(() => document.getElementById('frame').hasAttribute('data-rightbar-fullscreen')), false);
+  });
+  await check('Shift+R on a floating target explains the actual host limitation without opening the dock', async page => {
+    await ready(page);
+    await page.evaluate(() => {
+      const target = window.fixture.sidebarRight.commandTarget();
+      window.fixture.sidebarRight.toggleExpanded();
+      window.fixture.sidebarRight.commandTarget = () => ({ ...target, host: 'float' });
+    }); await settle(page);
+    await key(page, 'KeyR', { shift: true }); await settle(page);
+    assert.equal(await page.locator('.sc-notice').textContent(), '悬浮面板暂不支持放大或恢复。');
+    assert.equal(await page.evaluate(() => window.fixture.sidebarRight.isExpanded()), false);
+  });
   await check('fullscreen cue and help paint above the host panel without intercepting content or changing host layers', async page => {
     await ready(page); await key(page, 'KeyB'); await ready(page);
     await key(page, 'KeyR', { shift: true }); await ready(page); await settle(page);
