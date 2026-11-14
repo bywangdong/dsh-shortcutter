@@ -29,8 +29,8 @@ window.__ModuleLoader__.load({
       && (a.modifiers || []).map(normalizeModifier).every(m => (b.modifiers || []).map(normalizeModifier).includes(m));
 
     function apply(ctx) {
-      let anchor, root, layer, alive = true, revision = 0, serial = 0, pending, pendingTimer;
-      let navigationObserver, navigationScope = null, manualNavigation = false;
+      let anchor, scopeAnchor, root, layer, alive = true, revision = 0, serial = 0, pending, pendingTimer;
+      let navigationObserver, navigationScope = null, manualNavigation = false, handledEscape = false;
       let navigating = false, hints = false, prefix = "", area = "conversation", target;
       let entryHint = false, hintDelayTimer, hintTimer, hintDeadline = 0, hintRemaining = 0, hoverPoint;
       let prefixShown = false, prefixToken = 0, prefixShowTimer, prefixExpireTimer;
@@ -149,6 +149,9 @@ window.__ModuleLoader__.load({
           else if (layout.conversation?.contains(element)) { area = "conversation"; target = undefined; }
         }
       };
+      const focusScopeAnchor = scope => (scope
+        ? (scopeAnchor?.isConnected && scope.contains(scopeAnchor) ? scopeAnchor : scope)
+        : anchor);
       const take = (token, infer = false, nativeWebviewTarget = null, hint = false) => {
         if (!alive || !anchor || (token !== undefined && pending?.id !== token)) return;
         const context = navigationContext({ nativeWebviewTarget });
@@ -164,13 +167,55 @@ window.__ModuleLoader__.load({
           firstNavigation = false;
           window.focus();
         }
-        (context.scope || anchor).focus({ preventScroll: true });
+        focusScopeAnchor(context.scope).focus({ preventScroll: true });
         navigationObserver?.refresh();
         if (navigating) firstNavigation = false;
         // Native WebView focus can settle on a later event; the delayed preview
         // checks navigation again and never changes focus itself.
         if (hint) scheduleHint();
         publish();
+      };
+      const handleEscape = (targetEl, { prevent, stop }) => {
+        if (!(targetEl instanceof Element) || targetEl !== document.activeElement) return false;
+        if (targetEl.classList?.contains("sc-capture")) return false;
+        if (isNavigationContent(targetEl) || targetEl.closest('[data-approval-key], iframe, webview, .xterm, [inert]')) return false;
+        const context = navigationObserver?.refresh() || navigationContext();
+        if (["menu", "modal", "inactive", "composition"].includes(context.reason)) return false;
+        if (context.scope) {
+          if (context.reason === "input") {
+            prevent(); stop();
+            inputReset++; take(undefined, false, null, true);
+            return true;
+          }
+          if (context.navigating && (prefix || hints || entryHint)) {
+            prevent(); stop();
+            inputReset++; prefix = ""; hints = false; clearHint(); clearPrefixTimers(); publish();
+            return true;
+          }
+          return false;
+        }
+        if (!context.navigating) {
+          if (context.reason === "input") {
+            prevent();
+            inputReset++; take(undefined, true, null, true);
+            return true;
+          }
+          const layout = columns();
+          const from = layout.sidebar?.contains(targetEl) ? "sidebar"
+            : layout.conversation?.contains(targetEl) ? "conversation"
+            : targetEl === document.body && ["sidebar", "conversation"].includes(area) ? area : undefined;
+          if (!from) return false;
+          prevent();
+          inputReset++; area = from; target = undefined; take(undefined, false, null, true);
+          return true;
+        }
+        // In main-shell navigation mode, Escape dismisses prefixes/hints and is
+        // always consumed so DSH's conversation double-Escape never aborts a turn.
+        prevent();
+        inputReset++; clearHint();
+        prefix = ""; clearPrefixTimers(); hints = false;
+        publish();
+        return true;
       };
       const requestNavigation = (toolTarget, force = false) => {
         cancelPending();
@@ -563,8 +608,8 @@ window.__ModuleLoader__.load({
           h("div", { className: "sc-settings-body" },
             h("section", { className: "sc-preference-section" },
               h("h3", null, "返回导航"),
-              h("p", null, `左侧栏、对话和全局页面中按 Esc 返回导航；终端、网页使用下面的组合键（默认 ⌥ Esc，可一键切换为 ⌃ Esc 或自定义）。${config.bindings.enter ? `按 ${config.bindings.enter}` : "点击"}进入内容。`),
-              h("p", { className: "sc-muted" }, "弹窗、菜单和输入法优先处理 Esc。对话生成中保留双 Esc 停止输出，也可用下面的组合键返回导航。"),
+              h("p", null, `左侧栏、对话、全局页面和设置输入框中按 Esc 返回导航；终端、网页使用下面的组合键（默认 ⌥ Esc，可一键切换为 ⌃ Esc 或自定义）。${config.bindings.enter ? `按 ${config.bindings.enter}` : "点击"}进入内容。`),
+              h("p", { className: "sc-muted" }, "弹窗、菜单和输入法优先处理 Esc。对话生成中按 Esc 同样返回导航，不再触发双 Esc 停止输出（停止生成请点击输入框旁的停止按钮）。"),
               h("div", { className: "sc-native-row" },
                 h("span", { className: "sc-native-key", "data-sc-return": RETURN_ID }, row?.binding ? row.keys.join(" ") : "未绑定"),
                 RETURN_PRESETS.map(preset => h("button", { type: "button", key: preset.key, "aria-pressed": !recording && !candidate && matchedPreset === preset.key, onClick: () => selectPreset(preset), disabled: busy || !row }, preset.label)),
@@ -648,6 +693,7 @@ window.__ModuleLoader__.load({
         // pointer-transparent cue. Reset only our wrapper; interactive panels
         // explicitly opt out of dragging in our CSS.
         const overlay = h("div", { className: "sc-root", style: { WebkitAppRegion: "initial" }, ref: el => { layer = el; } },
+          navigationScope && h("div", { className: "sc-anchor", tabIndex: -1, "aria-hidden": true, ref: el => { scopeAnchor = el; } }),
           h(FocusCue),
           navigating && (hints || (prefix && prefixShown) || entryHint) && h("section", { className: "sc-panel", "aria-label": "导航快捷键",
             onPointerMove: hoverMove, onFocusCapture: pauseHint,
@@ -656,8 +702,8 @@ window.__ModuleLoader__.load({
             h("header", { className: "sc-panel-header" }, h("span", { className: "sc-panel-title" }, h("span", { className: "sc-dot", "aria-hidden": true }), prefix === "g" ? "跳转" : "导航"), h("span", { className: "sc-muted" }, surfaceLabel()),
               h("button", { type: "button", className: "sc-icon-button", "aria-label": "打开 DSH 设置", title: "打开 DSH 设置", onPointerDown: keepFocus, onClick: () => run("settings") }, "⚙")),
             h("div", { className: "sc-grid" }, items.map(c => h("button", { type: "button", className: "sc-key-row", key: c.id, "data-sc-command": c.id, onPointerDown: keepFocus, onClick: () => run(c.id) }, h("span", { className: "sc-keys" }, keyCaps(prefix ? config.bindings[c.id].split(" ")[1] : config.bindings[c.id])), h("span", null, c.id === "closeTab" ? (navigationScope ? "关闭设置" : activePanel() ? "关闭当前页面" : "关闭当前工具标签") : c.label)))),
-            !prefix && h("div", { className: "sc-prefix-row" }, [ ["g", "跳转"] ].map(([key, label]) => h("button", { type: "button", key, onPointerDown: keepFocus, onClick: () => { clearHint(); enterPrefix(key, true); hints = false; (navigationScope || anchor).focus({ preventScroll: true }); publish(); } }, h("span", { className: "sc-keys" }, keyCaps(key)), label, h("span", { className: "sc-chevron", "aria-hidden": true }, "›")))),
-            h("footer", { className: "sc-panel-footer" }, h("span", null, prefix ? "依次按键" : area === "sidebar" ? "侧栏内 Esc 返回" : area === "conversation" ? (activePanel() ? "页内 Esc 返回" : "对话内 Esc 返回") : `${returnLabel()} 返回导航`), h("span", null, "esc ", prefix ? "返回" : "收起"))));
+            !prefix && h("div", { className: "sc-prefix-row" }, [ ["g", "跳转"] ].map(([key, label]) => h("button", { type: "button", key, onPointerDown: keepFocus, onClick: () => { clearHint(); enterPrefix(key, true); hints = false; focusScopeAnchor(navigationScope).focus({ preventScroll: true }); publish(); } }, h("span", { className: "sc-keys" }, keyCaps(key)), label, h("span", { className: "sc-chevron", "aria-hidden": true }, "›")))),
+            h("footer", { className: "sc-panel-footer" }, h("span", null, prefix ? "依次按键" : navigationScope ? "设置内 Esc 返回或关闭" : area === "sidebar" ? "侧栏内 Esc 返回" : area === "conversation" ? (activePanel() ? "页内 Esc 返回" : "对话内 Esc 返回") : `${returnLabel()} 返回导航`), h("span", null, "esc ", prefix ? "返回" : "收起"))));
         return h("div", { className: "sc-root", ref: el => { root = el; }, "data-sc-navigation": navigating ? "true" : "false", "data-sc-area": surfaceArea(), "data-sc-prefix": prefix },
           h("div", { id: "sc-navigation-anchor", ref: el => { anchor = el; }, className: "sc-anchor", tabIndex: -1, role: "group", "aria-label": `导航模式，问号显示快捷键，${config.bindings.enter || "点击"}进入内容` }),
           // shell.overlay is below fullscreen tools (20 vs 40). Keep our anchor
@@ -709,6 +755,7 @@ window.__ModuleLoader__.load({
           return;
         }
         const { gesture: g, context: c } = input;
+        if (handledEscape && g.code === "Escape") { handledEscape = false; return; }
         // Any real key during the pause after an explicit return means the user
         // already knows what to press: keep that sequence quiet.
         if (hintDelayTimer !== undefined && !/^(Shift|Control|Meta|Alt)/.test(g.code)) clearHint();
@@ -717,30 +764,13 @@ window.__ModuleLoader__.load({
           if (pending) cancelPending();
         }
         if (g.composing || g.defaultPrevented || g.repeat || g.control || g.meta || g.alt) return;
-        if (!navigating && g.code !== "Escape" && (isNavigationInput(c.target) || isNavigationContent(c.target))) return;
+        if (g.code === "Escape") {
+          if (!g.shift) handleEscape(c.target, { prevent: () => input.consume(), stop: () => {} });
+          return;
+        }
+        if (!navigating && (isNavigationInput(c.target) || isNavigationContent(c.target))) return;
         const context = navigationObserver?.refresh() || navigationContext();
         if (["menu", "modal", "inactive", "composition"].includes(context.reason)) return;
-        // Modal Escape belongs to the host, except when dismissing our own
-        // visible which-key layer (handled before the modal's key handler).
-        if (g.code === "Escape" && context.scope) return;
-        // Fixed input arrives after local controls. Only unclaimed Escape in
-        // the shell sidebar/conversation returns focus; tools retain their keys.
-        if (!navigating && g.code === "Escape" && !g.shift && !own(c.target) && c.region !== "terminal"
-          && c.target instanceof Element && c.target === document.activeElement
-          && !c.target.closest('[data-approval-key], iframe, webview, .xterm, [inert]')) {
-          const layout = columns();
-          const from = layout.sidebar?.contains(c.target) ? "sidebar"
-            : layout.conversation?.contains(c.target) ? "conversation"
-            : c.target === document.body && ["sidebar", "conversation"].includes(area) ? area : undefined;
-          if (from) {
-            const sessionId = c.target.closest("[data-conversation-session]")?.getAttribute("data-conversation-session") || mounted();
-            // Keep the host's double-Escape stop sequence even if observer
-            // registration order changes after a plugin reload.
-            if (from === "conversation" && sessionId && ctx.sessions.binding(sessionId)?.session.getSnapshot().running) return;
-            input.consume(); area = from; target = undefined; take(undefined, false, null, true);
-            return;
-          }
-        }
         if (!context.navigating || c.target !== document.activeElement || nativeNavigationKey(c.target, g.code)) return;
         const result = resolveSequence(config.bindings, prefix, tokenFromGesture(g));
         if (!result.consume) return;
@@ -856,8 +886,24 @@ window.__ModuleLoader__.load({
           }
           publish();
         };
+        // Runs on body bubble: after React/Lexical local popups (#root), before
+        // SettingsRoot's document Escape close and DSH's window stop-shortcut.
+        const bodyEscape = event => {
+          if (event.key !== "Escape" || event.defaultPrevented || event.isComposing || event.keyCode === 229
+            || event.repeat || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
+          const targetEl = event.composedPath?.().find(node => node instanceof Element) || event.target;
+          if (hintDelayTimer !== undefined) clearHint();
+          if (targetEl !== anchor && !own(targetEl)) {
+            firstNavigation = false;
+            if (pending) cancelPending();
+          }
+          if (handleEscape(targetEl, { prevent: () => event.preventDefault(), stop: () => event.stopPropagation() })) {
+            handledEscape = true;
+            queueMicrotask(() => { handledEscape = false; });
+          }
+        };
         const modalEscape = event => {
-          if (event.key !== "Escape") return;
+          if (event.key !== "Escape" || (event.target !== document && event.target !== document.documentElement)) return;
           const context = navigationObserver.refresh();
           if (!context.scope || !context.navigating || (!prefix && !hints && !entryHint)
             || event.defaultPrevented || event.isComposing || event.repeat || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
@@ -878,6 +924,7 @@ window.__ModuleLoader__.load({
           else storageError = loaded.error;
           prefix = ""; hints = false; clearHint(); cancelPending(); navigationObserver.refresh(); publish();
         };
+        document.body.addEventListener("keydown", bodyEscape);
         document.addEventListener("keydown", modalEscape, true);
         document.addEventListener("pointerdown", pointer, true);
         const stopHeaderNavigation = observeToolHeaderNavigation(document, {
@@ -904,6 +951,7 @@ window.__ModuleLoader__.load({
         window.addEventListener("storage", storage);
         return () => {
           alive = false; stopRecording(); stopHeaderNavigation(); navigationObserver.dispose();
+          document.body.removeEventListener("keydown", bodyEscape);
           document.removeEventListener("keydown", modalEscape, true); document.removeEventListener("pointerdown", pointer, true);
           window.removeEventListener("focus", activate); window.removeEventListener("blur", blur); window.removeEventListener("storage", storage);
           clearTimeout(pendingTimer); clearTimeout(noticeTimer); clearTimeout(resetTimer); clearHint(); clearPrefixTimers(); pending = undefined; listeners.clear();

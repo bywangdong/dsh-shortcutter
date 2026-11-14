@@ -73,11 +73,41 @@ export async function pluginChecks(createPage) {
     await advance(page, 400);
     assert.equal(await page.locator('.sc-panel').count(), 1);
   });
-  await check('running conversation retains the native double-Escape path', async page => {
-    await ready(page); await page.locator('#composer').focus();
-    await page.evaluate(() => window.fixture.session.set({ openState: 'open', running: true })); await settle(page);
-    assert.equal(await key(page, 'Escape'), false);
+  await check('Escape returns to navigation even while conversation is running and suppresses host double-Escape stop', async page => {
+    await ready(page);
+    await page.evaluate(() => {
+      window.stopAttempts = 0;
+      window.popupOpen = true;
+      document.getElementById('composer').addEventListener('keydown', e => {
+        if (e.key === 'Escape' && window.popupOpen) { window.popupOpen = false; e.preventDefault(); }
+      });
+      window.addEventListener('keydown', e => {
+        if (e.key === 'Escape' && !e.defaultPrevented && window.fixture.session.getSnapshot().running) window.stopAttempts++;
+      });
+      window.fixture.session.set({ openState: 'open', running: true });
+    });
+    await page.locator('#composer').focus(); await settle(page);
+    // First Escape closes local composer popup (/ or @ menu) without leaving input.
+    await page.keyboard.press('Escape'); await settle(page);
+    assert.equal(await page.evaluate(() => window.popupOpen), false);
     assert.equal(await page.evaluate(() => document.activeElement.id), 'composer');
+    assert.equal(await page.evaluate(() => window.pluginState().navigating), false);
+    // Second Escape returns to navigation even while running, without triggering stop.
+    await page.keyboard.press('Escape'); await ready(page);
+    assert.equal(await page.evaluate(() => window.pluginState().navigating), true);
+    assert.equal(await page.locator('#composer').inputValue(), 'draft');
+    await page.keyboard.press('Escape'); await settle(page);
+    await page.locator('#ordinary').focus(); await settle(page);
+    await page.keyboard.press('Escape'); await page.keyboard.press('Escape'); await settle(page);
+    assert.equal(await page.evaluate(() => window.stopAttempts), 0);
+
+    // Fixed-input delivery and browser address input follow the same Escape rule.
+    await page.locator('#composer').focus(); await settle(page);
+    assert.equal(await key(page, 'Escape'), true); await ready(page);
+    await page.locator('#address').focus(); await settle(page);
+    await page.keyboard.press('Escape'); await ready(page);
+    assert.equal(await page.evaluate(() => window.pluginState().area), 'browser');
+    assert.equal(await page.locator('#address').inputValue(), 'draft');
   });
   await check('g prefix waits before showing, help toggles at once and Escape cancels both', async page => {
     await ready(page); await freezeClock(page);
@@ -105,11 +135,33 @@ export async function pluginChecks(createPage) {
     await page.evaluate(() => { const dialog = document.createElement('dialog'); dialog.id = 'settings'; dialog.dataset.shortcutModal = 'settings'; dialog.innerHTML = '<button id="settings-button">OK</button><input id="settings-input">'; document.body.append(dialog); dialog.showModal(); }); await settle(page);
     assert.equal(await page.evaluate(() => window.pluginState().navigating), true);
     await page.locator('#settings-input').focus(); await settle(page); assert.equal(await key(page, 'KeyG'), false);
+    await page.keyboard.press('Escape'); await settle(page);
+    assert.equal(await page.evaluate(() => document.getElementById('settings').open), true, 'Escape in settings input exits input before closing modal');
+    assert.equal(await page.evaluate(() => window.pluginState().navigating), true);
     await page.locator('#settings-button').focus(); await key(page, 'Slash', { shift: true }); await settle(page); assert.equal(await page.locator('#settings .sc-panel').count(), 1);
     await page.keyboard.press('Escape'); await settle(page); assert.equal(await page.locator('#settings .sc-panel').count(), 0);
     assert.equal(await page.evaluate(() => document.getElementById('settings').open), true);
     await page.evaluate(() => { const dialog = document.createElement('dialog'); dialog.id = 'confirm'; dialog.textContent = 'confirm'; document.body.append(dialog); dialog.showModal(); }); await settle(page);
     assert.equal(await key(page, 'KeyG'), false);
+    await page.evaluate(() => { document.getElementById('confirm').close(); document.getElementById('settings').close(); }); await settle(page);
+
+    // Also verify DSH SettingsRoot-style non-focusable div[role="dialog"] + document Escape close.
+    await page.evaluate(() => {
+      const panel = document.createElement('div');
+      panel.id = 'div-settings'; panel.setAttribute('role', 'dialog'); panel.setAttribute('aria-modal', 'true');
+      panel.dataset.shortcutModal = 'settings';
+      panel.innerHTML = '<input id="div-settings-input" value="q">';
+      const onKey = e => { if (e.key === 'Escape') { document.removeEventListener('keydown', onKey); panel.remove(); } };
+      document.addEventListener('keydown', onKey);
+      document.body.append(panel);
+    }); await settle(page);
+    await page.locator('#div-settings-input').focus(); await settle(page);
+    assert.equal(await page.evaluate(() => window.pluginState().navigating), false);
+    await page.keyboard.press('Escape'); await settle(page);
+    assert.equal(await page.locator('#div-settings').count(), 1, 'First Escape leaves input into Settings navigation');
+    assert.equal(await page.evaluate(() => window.pluginState().navigating), true);
+    await page.keyboard.press('Escape'); await settle(page);
+    assert.equal(await page.locator('#div-settings').count(), 0, 'Second Escape closes Settings via host handler');
   });
   await check('composition target removal recovers navigation without a compositionend', async page => {
     await ready(page); await page.locator('#composer').focus();
