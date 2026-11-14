@@ -18,12 +18,15 @@ window.__ModuleLoader__.load({
     const HINT_VISIBLE_MS = 2000;
     const HINT_RESUME_MS = 800;
     const PREFIX_TIMEOUT_MS = 4000;
-    const RETURN_COMMANDS = [
-      { id: RETURN_ID, title: "主快捷键", label: "Shortcutter · 返回导航", fallback: "⌥ Esc",
-        binding: { code: "Escape", modifiers: ["alt"] } },
-      { id: RETURN_ALT_ID, title: "备用快捷键", label: "Shortcutter · 返回导航（备用）", fallback: "⌃ Esc",
-        binding: { code: "Escape", modifiers: ["control"] } }
+    const DEFAULT_RETURN_BINDING = { code: "Escape", modifiers: ["alt"] };
+    const RETURN_PRESETS = [
+      { key: "default", label: "⌥ Esc（默认）", reset: true, binding: DEFAULT_RETURN_BINDING },
+      { key: "control", label: "⌃ Esc", reset: false, binding: { code: "Escape", modifiers: ["control"] } }
     ];
+    const normalizeModifier = modifier => modifier === "primary" ? "meta" : modifier;
+    const sameBinding = (a, b) => !!a && !!b && a.code === b.code
+      && (a.modifiers?.length || 0) === (b.modifiers?.length || 0)
+      && (a.modifiers || []).map(normalizeModifier).every(m => (b.modifiers || []).map(normalizeModifier).includes(m));
 
     function apply(ctx) {
       let anchor, root, layer, alive = true, revision = 0, serial = 0, pending, pendingTimer;
@@ -122,10 +125,9 @@ window.__ModuleLoader__.load({
         const sidebar = conversation?.previousElementSibling;
         return { frame, right, conversation, sidebar };
       };
-      const returnRow = (id = RETURN_ID) => ctx.shortcuts.catalog.getSnapshot().find(row => row.id === id);
+      const returnRow = () => ctx.shortcuts.catalog.getSnapshot().find(row => row.id === RETURN_ID);
       const returnUsable = row => !!row?.binding && !row.issue && !row.conflicts?.length;
-      const returnLabel = () => RETURN_COMMANDS.map(command => returnRow(command.id)).filter(returnUsable)
-        .map(row => row.keys.join(" ")).join(" / ") || "未绑定";
+      const returnLabel = () => { const row = returnRow(); return returnUsable(row) ? row.keys.join(" ") : "未绑定"; };
       const tell = text => {
         notice = text; clearTimeout(noticeTimer); publish();
         noticeTimer = setTimeout(() => { notice = ""; publish(); }, 4200);
@@ -464,7 +466,7 @@ window.__ModuleLoader__.load({
         const [draft, setDraft] = React.useState(() => structuredClone(config));
         const [expected, setExpected] = React.useState(raw);
         const [message, setMessage] = React.useState(storageError);
-        const [recording, setRecording] = React.useState(null);
+        const [recording, setRecording] = React.useState(false);
         const [candidate, setCandidate] = React.useState();
         const [nativeMessage, setNativeMessage] = React.useState("");
         const [busy, setBusy] = React.useState(false);
@@ -475,31 +477,29 @@ window.__ModuleLoader__.load({
           let live = true;
           const stop = () => {
             recordingToken.current++;
-            if (live) setRecording(null);
+            if (live) setRecording(false);
             return ctx.shortcuts.recording(false).catch(() => {});
           };
           stopRecording = stop;
           return () => { live = false; preferencesLive.current = false; stop(); stopRecording = () => {}; };
         }, []);
         React.useEffect(() => { if (recording) capture.current?.focus(); }, [recording]);
-        const start = async id => {
+        const start = async () => {
           const token = ++recordingToken.current;
           setNativeMessage(""); setCandidate(undefined);
           nativeRevision.current = ctx.shortcuts.config.getSnapshot().revision;
           try {
             await ctx.shortcuts.recording(true);
             if (token !== recordingToken.current || !alive) { await ctx.shortcuts.recording(false); return; }
-            setRecording(id);
+            setRecording(true);
           } catch { setNativeMessage("当前无法录制快捷键，原有快捷键保持有效。"); }
         };
-        const describeNative = (binding, id) => {
+        const describeNative = binding => {
           try {
             const described = ctx.shortcuts.describeBinding(binding);
-            const conflicts = described.conflicts.filter(other => other !== id);
+            const conflicts = described.conflicts.filter(other => other !== RETURN_ID);
             if (described.issue || conflicts.length) {
-              setNativeMessage(conflicts.some(other => RETURN_COMMANDS.some(command => command.id === other))
-                ? "这个组合正被另一个返回导航快捷键使用，请换一个。"
-                : conflicts.length ? "这个组合已被 DSH 占用，请换一个。" : "这个组合不能作为返回导航快捷键。");
+              setNativeMessage(conflicts.length ? "这个组合已被 DSH 占用，请换一个。" : "这个组合不能作为返回导航快捷键。");
               return;
             }
             return described;
@@ -518,25 +518,23 @@ window.__ModuleLoader__.load({
           if (event.ctrlKey) modifiers.push("control");
           if (event.altKey) modifiers.push("alt");
           if (event.shiftKey) modifiers.push("shift");
-          const id = recording;
-          const described = describeNative({ code: event.code, modifiers }, id);
+          const described = describeNative({ code: event.code, modifiers });
           if (described) {
-            setCandidate({ ...described, id }); setNativeMessage(""); stopRecording();
+            setCandidate(described); setNativeMessage(""); stopRecording();
           }
         };
-        const saveNative = async (id, reset) => {
-          if (savingNative.current || (!reset && candidate?.id !== id)) return;
-          const expectedRevision = reset ? ctx.shortcuts.config.getSnapshot().revision : nativeRevision.current;
+        const applyNative = async (operation, freshRevision = false) => {
+          if (savingNative.current) return;
+          const expectedRevision = freshRevision ? ctx.shortcuts.config.getSnapshot().revision : nativeRevision.current;
           savingNative.current = true;
           setBusy(true); setNativeMessage("");
           try {
             await stopRecording();
             if (!alive || !preferencesLive.current) return;
-            const operation = reset ? { type: "reset", id } : { type: "set", id, binding: candidate.binding };
             const result = await ctx.shortcuts.edit(operation, expectedRevision);
             if (!alive || !preferencesLive.current) return;
             if (result.status === "saved") { setCandidate(undefined); setNativeMessage("已保存，下次启动仍然有效。"); }
-            else setNativeMessage(result.status === "stale" ? "快捷键配置已变化，请重新录制。" : result.status === "conflict" ? "这个组合与其他快捷键冲突，原有键位保持有效。" : "保存失败，原有键位保持有效。");
+            else setNativeMessage(result.status === "stale" ? "快捷键配置已变化，请重试。" : result.status === "conflict" ? "这个组合与其他快捷键冲突，原有键位保持有效。" : "保存失败，原有键位保持有效。");
           } catch {
             if (alive && preferencesLive.current) setNativeMessage("保存失败，原有键位保持有效。");
           } finally {
@@ -544,38 +542,40 @@ window.__ModuleLoader__.load({
             if (alive && preferencesLive.current) setBusy(false);
           }
         };
+        const selectPreset = async preset => {
+          if (savingNative.current) return;
+          await stopRecording();
+          setCandidate(undefined);
+          if (!preset.reset && !describeNative(preset.binding)) return;
+          await applyNative(preset.reset ? { type: "reset", id: RETURN_ID } : { type: "set", id: RETURN_ID, binding: preset.binding }, true);
+        };
         const save = () => {
           const error = saveConfig(draft, expected);
           if (error) setMessage(error);
           else { setExpected(raw); setDraft(structuredClone(config)); setMessage("快捷键设置已保存"); }
         };
-        const commandEscape = RETURN_COMMANDS.some(command => {
-          const binding = returnRow(command.id)?.binding;
-          return binding?.code === "Escape" && binding.modifiers?.length === 1 && ["meta", "primary"].includes(binding.modifiers[0]);
-        });
+        const row = returnRow();
+        const state = !row ? "未注册" : !row.binding ? "" : row.conflicts?.length ? "与其他快捷键冲突，未启用" : row.issue ? "不可用" : "";
+        const matchedPreset = row?.binding && RETURN_PRESETS.find(preset => sameBinding(row.binding, preset.binding))?.key;
+        const commandEscape = row?.binding?.code === "Escape" && row.binding.modifiers?.length === 1 && ["meta", "primary"].includes(row.binding.modifiers[0]);
         return h("section", { className: "sc-preferences", "aria-labelledby": "sc-preferences-title" },
           h("h2", { id: "sc-preferences-title" }, "Shortcutter"),
           h("div", { className: "sc-settings-body" },
             h("section", { className: "sc-preference-section" },
               h("h3", null, "返回导航"),
-              h("p", null, `左侧栏、对话和全局页面中按 Esc 返回导航；终端、网页使用下面的组合键，两个同时有效。${config.bindings.enter ? `按 ${config.bindings.enter}` : "点击"}进入内容。`),
+              h("p", null, `左侧栏、对话和全局页面中按 Esc 返回导航；终端、网页使用下面的组合键（默认 ⌥ Esc，可一键切换为 ⌃ Esc 或自定义）。${config.bindings.enter ? `按 ${config.bindings.enter}` : "点击"}进入内容。`),
               h("p", { className: "sc-muted" }, "弹窗、菜单和输入法优先处理 Esc。对话生成中保留双 Esc 停止输出，也可用下面的组合键返回导航。"),
-              h("div", { className: "sc-return-list" }, RETURN_COMMANDS.map(command => {
-                const row = returnRow(command.id);
-                const state = !row ? "未注册" : !row.binding ? "" : row.conflicts?.length ? "与其他快捷键冲突，未启用" : row.issue ? "不可用" : "";
-                return h("div", { className: "sc-native-row", key: command.id },
-                  h("span", { className: "sc-native-title" }, command.title),
-                  h("span", { className: "sc-native-key", "data-sc-return": command.id }, row?.binding ? row.keys.join(" ") : "未绑定"),
-                  h("button", { type: "button", "aria-label": `更改${command.title}`, onClick: () => start(command.id), disabled: busy || !!recording || !row }, "更改"),
-                  h("button", { type: "button", onClick: () => saveNative(command.id, true), disabled: busy || !!recording || !row }, `恢复 ${command.fallback}`),
-                  state && h("span", { className: "sc-muted" }, state));
-              })),
+              h("div", { className: "sc-native-row" },
+                h("span", { className: "sc-native-key", "data-sc-return": RETURN_ID }, row?.binding ? row.keys.join(" ") : "未绑定"),
+                RETURN_PRESETS.map(preset => h("button", { type: "button", key: preset.key, "aria-pressed": !recording && !candidate && matchedPreset === preset.key, onClick: () => selectPreset(preset), disabled: busy || !row }, preset.label)),
+                h("button", { type: "button", "aria-pressed": recording || !!candidate || (!!row?.binding && !matchedPreset), onClick: start, disabled: busy || recording || !row }, "自定义…"),
+                state && h("span", { className: "sc-muted" }, state)),
               commandEscape && h("p", { className: "sc-muted", "data-sc-system-note": "" },
-                "⌘ Esc 无响应时，通常是 macOS 的“游戏叠层”先占用了它：打开 系统设置 → 键盘 → 键盘快捷键… → 调度中心，取消勾选“游戏叠层”（或改成其他组合）。改完前可先用备用快捷键。"),
-              recording && h("input", { ref: capture, className: "sc-capture", readOnly: true, value: "", placeholder: `按下新的${RETURN_COMMANDS.find(command => command.id === recording)?.title}组合 · Esc 取消`, "aria-label": "录制返回导航快捷键", onKeyDown: record }),
+                "⌘ Esc 无响应时，通常是 macOS 的“游戏叠层”先占用了它：打开 系统设置 → 键盘 → 键盘快捷键… → 调度中心，取消勾选“游戏叠层”，或直接切换回 ⌥ Esc / ⌃ Esc。"),
+              recording && h("input", { ref: capture, className: "sc-capture", readOnly: true, value: "", placeholder: "按下新的组合键 · Esc 取消", "aria-label": "录制返回导航快捷键", onKeyDown: record }),
               candidate && h("div", { className: "sc-native-row" },
-                h("span", null, `新${RETURN_COMMANDS.find(command => command.id === candidate.id)?.title}：`, candidate.keys.join(" ")),
-                h("button", { type: "button", disabled: busy, onClick: () => saveNative(candidate.id) }, "保存组合"),
+                h("span", null, "新组合：", candidate.keys.join(" ")),
+                h("button", { type: "button", disabled: busy, onClick: () => candidate && applyNative({ type: "set", id: RETURN_ID, binding: candidate.binding }) }, "保存组合"),
                 h("button", { type: "button", disabled: busy, onClick: () => { setCandidate(undefined); setNativeMessage(""); } }, "取消")),
               h("p", { className: "sc-status", role: "status" }, nativeMessage)),
             h("section", { className: "sc-preference-section" },
@@ -631,7 +631,7 @@ window.__ModuleLoader__.load({
           if (committed !== token) { setCommitted(token); return; }
           take(token);
         }, [token, sessionId, currentTab?.id, openState, state?.writable, state?.phase, state?.info?.state, committed, revision]);
-        const available = RETURN_COMMANDS.some(command => returnUsable(returnRow(command.id)));
+        const available = returnUsable(returnRow());
         const items = COMMANDS.filter(c => {
           const key = config.bindings[c.id];
           return prefix ? key.startsWith(prefix + " ") : key && !key.includes(" ");
@@ -677,12 +677,10 @@ window.__ModuleLoader__.load({
       ctx.effect(() => ctx.slots.inject("settings.section", () => ctx.slots.register({
         name: "settings.section", id: "shortcutter", order: 80, label: "Shortcutter"
       }, Preferences)), "shortcutter.settings");
-      // Two independently editable return commands share one action. ⌥ Esc is
-      // the one-handed default; ⌃ Esc is ready alongside it (e.g. remapped Caps).
-      for (const spec of RETURN_COMMANDS) ctx.effect(() => {
+      ctx.effect(() => {
         const command = {
-          id: spec.id, label: () => spec.label, aliases: [],
-          defaults: { "desktop:macos": spec.binding },
+          id: RETURN_ID, label: () => "Shortcutter · 返回导航", aliases: [],
+          defaults: { "desktop:macos": DEFAULT_RETURN_BINDING },
           regions: ["page", "editable", "terminal"], modals: ["settings"],
           resolve: input => {
             const nativeWebviewTarget = input?.source === "webview" ? input.target : null;
@@ -698,7 +696,7 @@ window.__ModuleLoader__.load({
           try { return ctx.shortcuts.register({ ...command, defaults: {} }); }
           catch { return () => {}; }
         }
-      }, spec.id === RETURN_ID ? "shortcutter.return" : "shortcutter.return-alternate");
+      }, "shortcutter.return");
       ctx.effect(() => ctx.shortcuts.observeFixedInput(input => {
         if (input.type === "reset") {
           // The host also resets on pointerdown/focusin. Let our own controls

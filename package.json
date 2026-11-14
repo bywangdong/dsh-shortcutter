@@ -1,6 +1,6 @@
 {
   "name": "dsh-shortcutter",
-  "version": "0.1.35",
+  "version": "0.1.36",
   "private": true,
   "description": "DSH Shortcutter — 键盘导航、which-key 提示和可自定义快捷键",
   "type": "module",

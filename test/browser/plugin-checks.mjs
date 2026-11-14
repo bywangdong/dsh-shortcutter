@@ -254,83 +254,92 @@ export async function pluginChecks(createPage) {
     assert.deepEqual(await page.evaluate(() => ({ ...window.counts })), {});
     assert.equal(await page.evaluate(() => window.fixture.session.listenerCount()), 0);
   });
-  const PRIMARY = 'magic-shortcuts.navigate', ALTERNATE = 'shortcutter.navigate.alternate';
-  const returnKey = (page, id) => page.locator(`[data-sc-return="${id}"]`);
-  const bindingOf = (page, id) => page.evaluate(id => window.fixture.catalog.getSnapshot().find(row => row.id === id).binding, id);
-  const recordReturn = async (page, slot, combo) => {
-    await page.getByRole('button', { name: `更改${slot}`, exact: true }).click();
+  const PRIMARY = 'magic-shortcuts.navigate';
+  const returnKey = page => page.locator(`[data-sc-return="${PRIMARY}"]`);
+  const bindingOf = page => page.evaluate(id => window.fixture.catalog.getSnapshot().find(row => row.id === id).binding, PRIMARY);
+  const recordReturn = async (page, combo) => {
+    await page.getByRole('button', { name: '自定义…', exact: true }).click();
     await page.getByLabel('录制返回导航快捷键').press(combo); await settle(page);
   };
   const nativeStatus = page => page.locator('.sc-preference-section .sc-status').first().innerText();
-  await check('⌥ Esc and ⌃ Esc are both bound by default and either one returns to navigation', async page => {
+  await check('⌥ Esc is the single default return shortcut, with one-click ⌃ Esc switch and no primary/alternate split', async page => {
     await ready(page);
-    assert.deepEqual(await page.evaluate(() => [...window.fixture.commands.keys()].sort()), [PRIMARY, ALTERNATE].sort());
-    for (const id of [PRIMARY, ALTERNATE]) {
-      await page.locator('#composer').focus(); await settle(page);
-      assert.equal(await page.evaluate(() => window.pluginState().navigating), false);
-      assert.equal(await page.evaluate(id => window.fixture.navigate({}, id), id), 'handled'); await ready(page);
-    }
+    assert.deepEqual(await page.evaluate(() => [...window.fixture.commands.keys()]), [PRIMARY]);
+    await page.locator('#composer').focus(); await settle(page);
+    assert.equal(await page.evaluate(() => window.pluginState().navigating), false);
+    assert.equal(await page.evaluate(() => window.fixture.navigate()), 'handled'); await ready(page);
     await page.evaluate(() => window.fixture.preferences());
-    assert.equal(await returnKey(page, PRIMARY).innerText(), '⌥ Esc');
-    assert.equal(await returnKey(page, ALTERNATE).innerText(), '⌃ Esc');
+    assert.equal(await returnKey(page).innerText(), '⌥ Esc');
+    assert.equal(await page.getByRole('button', { name: '⌥ Esc（默认）', exact: true }).getAttribute('aria-pressed'), 'true');
+    assert.equal(await page.getByRole('button', { name: '⌃ Esc', exact: true }).getAttribute('aria-pressed'), 'false');
+    assert.equal(await page.getByRole('button', { name: '自定义…', exact: true }).getAttribute('aria-pressed'), 'false');
+    assert.equal(await page.getByText('主快捷键').count(), 0);
+    assert.equal(await page.getByText('备用快捷键').count(), 0);
     assert.equal(await page.getByText('⌘ J').count(), 0, 'The old ⌘ J default is gone');
     assert.equal(await page.locator('[data-sc-system-note]').count(), 0, 'No Game Overlay warning unless ⌘ Esc is chosen');
   });
-  await check('each return slot records, saves and restores only its own binding', async page => {
+  await check('return shortcut switches between ⌥ Esc, ⌃ Esc and custom binding in one row', async page => {
     await page.evaluate(() => window.fixture.preferences());
-    await recordReturn(page, '备用快捷键', 'Meta+Shift+KeyK');
+    await page.getByRole('button', { name: '⌃ Esc', exact: true }).click(); await settle(page);
+    assert.deepEqual(await bindingOf(page), { code: 'Escape', modifiers: ['control'] });
+    assert.equal(await returnKey(page).innerText(), '⌃ Esc');
+    assert.equal(await page.getByRole('button', { name: '⌃ Esc', exact: true }).getAttribute('aria-pressed'), 'true');
+    assert.equal(await page.getByRole('button', { name: '⌥ Esc（默认）', exact: true }).getAttribute('aria-pressed'), 'false');
+    await recordReturn(page, 'Meta+Shift+KeyK');
+    assert.equal(await page.getByRole('button', { name: '自定义…', exact: true }).getAttribute('aria-pressed'), 'true');
     await page.getByRole('button', { name: '保存组合', exact: true }).click(); await settle(page);
-    assert.deepEqual(await bindingOf(page, ALTERNATE), { code: 'KeyK', modifiers: ['meta', 'shift'] });
-    assert.deepEqual(await bindingOf(page, PRIMARY), { code: 'Escape', modifiers: ['alt'] });
-    await page.getByRole('button', { name: '恢复 ⌃ Esc', exact: true }).click(); await settle(page);
-    assert.equal(await returnKey(page, ALTERNATE).innerText(), '⌃ Esc');
+    assert.deepEqual(await bindingOf(page), { code: 'KeyK', modifiers: ['meta', 'shift'] });
+    assert.equal(await page.getByRole('button', { name: '自定义…', exact: true }).getAttribute('aria-pressed'), 'true');
+    await page.getByRole('button', { name: '⌥ Esc（默认）', exact: true }).click(); await settle(page);
+    assert.equal(await returnKey(page).innerText(), '⌥ Esc');
+    assert.equal(await page.getByRole('button', { name: '⌥ Esc（默认）', exact: true }).getAttribute('aria-pressed'), 'true');
     assert.deepEqual(await page.evaluate(() => window.fixture.native.edits.map(e => [e.operation.type, e.operation.id])),
-      [['set', ALTERNATE], ['reset', ALTERNATE]]);
+      [['set', PRIMARY], ['set', PRIMARY], ['reset', PRIMARY]]);
   });
   await check('modified Escape records and saves; ⌘ Esc shows Game Overlay note; bare Escape cancels', async page => {
     await page.evaluate(() => window.fixture.preferences());
-    await recordReturn(page, '主快捷键', 'Meta+Escape');
+    await recordReturn(page, 'Meta+Escape');
     await page.getByRole('button', { name: '保存组合', exact: true }).click(); await settle(page);
     assert.equal(await page.locator('[data-sc-system-note]').count(), 1, 'Game Overlay guidance appears when plain ⌘ Esc is chosen');
-    await recordReturn(page, '主快捷键', 'Shift+Meta+Escape');
+    await recordReturn(page, 'Shift+Meta+Escape');
     await page.getByRole('button', { name: '保存组合', exact: true }).click(); await settle(page);
-    assert.deepEqual(await bindingOf(page, PRIMARY), { code: 'Escape', modifiers: ['meta', 'shift'] });
+    assert.deepEqual(await bindingOf(page), { code: 'Escape', modifiers: ['meta', 'shift'] });
     assert.equal(await page.locator('[data-sc-system-note]').count(), 0, 'Guidance is specific to plain ⌘ Esc');
-    await recordReturn(page, '主快捷键', 'Escape');
+    await recordReturn(page, 'Escape');
     assert.equal(await page.getByLabel('录制返回导航快捷键').count(), 0);
     assert.equal(await page.evaluate(() => window.fixture.native.recording), false);
     assert.equal(await page.evaluate(() => window.fixture.native.edits.length), 2);
   });
   await check('Shift semicolon recording uses its physical code even when key is colon', async page => {
     await page.evaluate(() => window.fixture.preferences());
-    await page.getByRole('button', { name: '更改主快捷键', exact: true }).click();
+    await page.getByRole('button', { name: '自定义…', exact: true }).click();
     await page.getByLabel('录制返回导航快捷键').dispatchEvent('keydown', { key: ':', code: 'Semicolon', metaKey: true, shiftKey: true });
     await page.getByRole('button', { name: '保存组合', exact: true }).click(); await settle(page);
-    assert.deepEqual(await bindingOf(page, PRIMARY), { code: 'Semicolon', modifiers: ['meta', 'shift'] });
+    assert.deepEqual(await bindingOf(page), { code: 'Semicolon', modifiers: ['meta', 'shift'] });
   });
   await check('conflicts, concurrent edits and save failures preserve the current shortcut and allow retry', async page => {
     await page.evaluate(() => window.fixture.preferences());
     await page.evaluate(() => { window.fixture.native.conflicts = ['another-command']; });
-    await recordReturn(page, '主快捷键', 'Meta+KeyK');
+    await page.getByRole('button', { name: '⌃ Esc', exact: true }).click(); await settle(page);
     assert.match(await nativeStatus(page), /已被 DSH 占用/);
-    await page.evaluate(id => { window.fixture.native.conflicts = [id]; }, ALTERNATE);
-    await page.getByLabel('录制返回导航快捷键').press('Meta+KeyK'); await settle(page);
-    assert.match(await nativeStatus(page), /另一个返回导航快捷键/);
+    assert.equal(await returnKey(page).innerText(), '⌥ Esc');
+    await recordReturn(page, 'Meta+KeyK');
+    assert.match(await nativeStatus(page), /已被 DSH 占用/);
     assert.equal(await page.getByRole('button', { name: '保存组合', exact: true }).count(), 0);
     await page.getByLabel('录制返回导航快捷键').press('Escape'); await settle(page);
     assert.equal(await page.evaluate(() => window.fixture.native.edits.length), 0);
     await page.evaluate(() => { window.fixture.native.conflicts = ['magic-shortcuts.navigate']; });
     for (const result of ['conflict', 'stale', 'failed', 'throw']) {
       await page.evaluate(result => { window.fixture.native.result = result === 'throw' ? undefined : result; window.fixture.native.throws = result === 'throw'; }, result);
-      await recordReturn(page, '主快捷键', 'Meta+KeyK');
+      await recordReturn(page, 'Meta+KeyK');
       await page.getByRole('button', { name: '保存组合', exact: true }).click(); await settle(page);
-      assert.equal(await returnKey(page, PRIMARY).innerText(), '⌥ Esc', result);
-      assert.equal(await page.getByRole('button', { name: '更改主快捷键', exact: true }).isEnabled(), true);
+      assert.equal(await returnKey(page).innerText(), '⌥ Esc', result);
+      assert.equal(await page.getByRole('button', { name: '自定义…', exact: true }).isEnabled(), true);
     }
     await page.evaluate(() => { window.fixture.native.result = undefined; window.fixture.native.throws = false; });
-    await recordReturn(page, '主快捷键', 'Meta+KeyK');
+    await recordReturn(page, 'Meta+KeyK');
     await page.getByRole('button', { name: '保存组合', exact: true }).click(); await settle(page);
-    assert.equal(await returnKey(page, PRIMARY).innerText(), '⌘ K');
+    assert.equal(await returnKey(page).innerText(), '⌘ K');
   });
   await check('verified native WebView return restores outer focus once when the document reports inactive', async page => {
     await unfocusedWebview(page);
@@ -501,12 +510,17 @@ export async function pluginChecks(createPage) {
     assert.equal(await page.evaluate(() => document.activeElement.id), 'sc-navigation-anchor');
     assert.equal(await page.locator('#composer').inputValue(), 'draft');
   });
-  await check('the alternate return previews the same way', async page => {
-    await ready(page); await freezeClock(page);
+  await check('switching to the ⌃ Esc preset previews the same way', async page => {
+    await ready(page);
+    await page.evaluate(() => window.fixture.preferences());
+    await page.getByRole('button', { name: '⌃ Esc', exact: true }).click(); await settle(page);
+    await page.evaluate(() => document.getElementById('preferences').close()); await ready(page);
+    await freezeClock(page);
     await page.locator('#composer').focus(); await advance(page, 50);
-    assert.equal(await page.evaluate(id => window.fixture.navigate({}, id), ALTERNATE), 'handled');
+    assert.equal(await page.evaluate(() => window.fixture.navigate()), 'handled');
     await advance(page, 100); assert.equal(await page.locator('.sc-panel').count(), 0);
     await advance(page, 400); assert.equal(await page.locator('.sc-panel').count(), 1);
+    assert.match(await page.locator('.sc-panel-footer').innerText(), /Esc/);
   });
   await check('keys pressed during the pause keep a quick return sequence completely quiet', async page => {
     await ready(page); await freezeClock(page);

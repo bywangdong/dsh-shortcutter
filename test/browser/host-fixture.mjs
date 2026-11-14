@@ -81,8 +81,7 @@ export function setup({ instrument = false, openState = 'open', nodes = 2000, au
   renderPresentation();
   const cleanups = [], commands = new Map();
   const defaults = {
-    'magic-shortcuts.navigate': { code: 'Escape', modifiers: ['alt'] },
-    'shortcutter.navigate.alternate': { code: 'Escape', modifiers: ['control'] }
+    'magic-shortcuts.navigate': { code: 'Escape', modifiers: ['alt'] }
   };
   const describe = binding => {
     binding = { ...binding, modifiers: binding.modifiers.map(m => m === 'primary' ? 'meta' : m) };
