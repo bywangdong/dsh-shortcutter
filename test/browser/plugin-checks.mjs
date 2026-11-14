@@ -262,7 +262,7 @@ export async function pluginChecks(createPage) {
     await page.getByLabel('录制返回导航快捷键').press(combo); await settle(page);
   };
   const nativeStatus = page => page.locator('.sc-preference-section .sc-status').first().innerText();
-  await check('⌘ Esc and ⇧⌘; are both bound by default and either one returns to navigation', async page => {
+  await check('⌥ Esc and ⌃ Esc are both bound by default and either one returns to navigation', async page => {
     await ready(page);
     assert.deepEqual(await page.evaluate(() => [...window.fixture.commands.keys()].sort()), [PRIMARY, ALTERNATE].sort());
     for (const id of [PRIMARY, ALTERNATE]) {
@@ -271,24 +271,27 @@ export async function pluginChecks(createPage) {
       assert.equal(await page.evaluate(id => window.fixture.navigate({}, id), id), 'handled'); await ready(page);
     }
     await page.evaluate(() => window.fixture.preferences());
-    assert.equal(await returnKey(page, PRIMARY).innerText(), '⌘ Esc');
-    assert.equal(await returnKey(page, ALTERNATE).innerText(), '⇧ ⌘ ;');
+    assert.equal(await returnKey(page, PRIMARY).innerText(), '⌥ Esc');
+    assert.equal(await returnKey(page, ALTERNATE).innerText(), '⌃ Esc');
     assert.equal(await page.getByText('⌘ J').count(), 0, 'The old ⌘ J default is gone');
-    assert.equal(await page.locator('[data-sc-system-note]').count(), 1, 'Game Overlay guidance appears for ⌘ Esc');
+    assert.equal(await page.locator('[data-sc-system-note]').count(), 0, 'No Game Overlay warning unless ⌘ Esc is chosen');
   });
   await check('each return slot records, saves and restores only its own binding', async page => {
     await page.evaluate(() => window.fixture.preferences());
     await recordReturn(page, '备用快捷键', 'Meta+Shift+KeyK');
     await page.getByRole('button', { name: '保存组合', exact: true }).click(); await settle(page);
     assert.deepEqual(await bindingOf(page, ALTERNATE), { code: 'KeyK', modifiers: ['meta', 'shift'] });
-    assert.deepEqual(await bindingOf(page, PRIMARY), { code: 'Escape', modifiers: ['meta'] });
-    await page.getByRole('button', { name: '恢复 ⇧ ⌘ ;', exact: true }).click(); await settle(page);
-    assert.equal(await returnKey(page, ALTERNATE).innerText(), '⇧ ⌘ ;');
+    assert.deepEqual(await bindingOf(page, PRIMARY), { code: 'Escape', modifiers: ['alt'] });
+    await page.getByRole('button', { name: '恢复 ⌃ Esc', exact: true }).click(); await settle(page);
+    assert.equal(await returnKey(page, ALTERNATE).innerText(), '⌃ Esc');
     assert.deepEqual(await page.evaluate(() => window.fixture.native.edits.map(e => [e.operation.type, e.operation.id])),
       [['set', ALTERNATE], ['reset', ALTERNATE]]);
   });
-  await check('modified Escape records and saves; bare Escape cancels without changing the binding', async page => {
+  await check('modified Escape records and saves; ⌘ Esc shows Game Overlay note; bare Escape cancels', async page => {
     await page.evaluate(() => window.fixture.preferences());
+    await recordReturn(page, '主快捷键', 'Meta+Escape');
+    await page.getByRole('button', { name: '保存组合', exact: true }).click(); await settle(page);
+    assert.equal(await page.locator('[data-sc-system-note]').count(), 1, 'Game Overlay guidance appears when plain ⌘ Esc is chosen');
     await recordReturn(page, '主快捷键', 'Shift+Meta+Escape');
     await page.getByRole('button', { name: '保存组合', exact: true }).click(); await settle(page);
     assert.deepEqual(await bindingOf(page, PRIMARY), { code: 'Escape', modifiers: ['meta', 'shift'] });
@@ -296,7 +299,7 @@ export async function pluginChecks(createPage) {
     await recordReturn(page, '主快捷键', 'Escape');
     assert.equal(await page.getByLabel('录制返回导航快捷键').count(), 0);
     assert.equal(await page.evaluate(() => window.fixture.native.recording), false);
-    assert.equal(await page.evaluate(() => window.fixture.native.edits.length), 1);
+    assert.equal(await page.evaluate(() => window.fixture.native.edits.length), 2);
   });
   await check('Shift semicolon recording uses its physical code even when key is colon', async page => {
     await page.evaluate(() => window.fixture.preferences());
@@ -321,7 +324,7 @@ export async function pluginChecks(createPage) {
       await page.evaluate(result => { window.fixture.native.result = result === 'throw' ? undefined : result; window.fixture.native.throws = result === 'throw'; }, result);
       await recordReturn(page, '主快捷键', 'Meta+KeyK');
       await page.getByRole('button', { name: '保存组合', exact: true }).click(); await settle(page);
-      assert.equal(await returnKey(page, PRIMARY).innerText(), '⌘ Esc', result);
+      assert.equal(await returnKey(page, PRIMARY).innerText(), '⌥ Esc', result);
       assert.equal(await page.getByRole('button', { name: '更改主快捷键', exact: true }).isEnabled(), true);
     }
     await page.evaluate(() => { window.fixture.native.result = undefined; window.fixture.native.throws = false; });
@@ -683,6 +686,76 @@ export async function pluginChecks(createPage) {
       assert.equal(await page.locator('.sc-panel').count(), 0, scene);
       assert.equal(await page.evaluate(() => window.pluginState().navigating), true);
     }
+  });
+  await check('g p and g a open Plugins and Schedules, focus search with i, return on Esc, and close on w or c', async page => {
+    await ready(page);
+    await key(page, 'KeyG'); await key(page, 'KeyP'); await ready(page); await settle(page);
+    assert.equal(await page.evaluate(() => window.fixture.panelInfo.getSnapshot().activePanelId), 'plugins');
+    assert.equal(await page.locator('.sc-focus-cue[data-sc-focus-area="plugins"]').count(), 1);
+    await key(page, 'Slash', { shift: true }); await settle(page);
+    assert.equal(await page.locator('.sc-panel-header .sc-muted').innerText(), '插件');
+    assert.match(await page.locator('[data-sc-command="closeTab"]').innerText(), /关闭当前页面/);
+    await key(page, 'KeyI'); await settle(page);
+    assert.equal(await page.evaluate(() => document.activeElement.id), 'panel-search');
+    assert.equal(await page.evaluate(() => window.pluginState().navigating), false);
+    assert.equal(await key(page, 'Escape'), true); await ready(page); await settle(page);
+    assert.equal(await page.evaluate(() => window.fixture.panelInfo.getSnapshot().activePanelId), 'plugins');
+    await key(page, 'KeyG'); await key(page, 'KeyA'); await ready(page); await settle(page);
+    assert.equal(await page.evaluate(() => window.fixture.panelInfo.getSnapshot().activePanelId), 'schedules');
+    assert.equal(await page.locator('.sc-focus-cue[data-sc-focus-area="schedules"]').count(), 1);
+    await key(page, 'KeyW'); await ready(page); await settle(page);
+    assert.equal(await page.evaluate(() => window.fixture.panelInfo.getSnapshot().activePanelId), null);
+    assert.equal(await page.evaluate(() => window.fixture.sidebarRight.mounted.getSnapshot()), 's1');
+    assert.equal(await page.locator('.sc-focus-cue[data-sc-focus-area="conversation"]').count(), 1);
+    await key(page, 'KeyG'); await key(page, 'KeyP'); await ready(page);
+    await key(page, 'KeyC'); await ready(page);
+    assert.equal(await page.evaluate(() => window.fixture.panelInfo.getSnapshot().activePanelId), null);
+  });
+  await check('w closes Settings without touching background tools, and g b preserves session history across global pages', async page => {
+    await ready(page);
+    await page.evaluate(() => window.fixture.preferences()); await settle(page);
+    assert.equal(await page.evaluate(() => document.getElementById('preferences').open), true);
+    await key(page, 'Slash', { shift: true }); await settle(page);
+    assert.match(await page.locator('[data-sc-command="closeTab"]').innerText(), /关闭设置/);
+    await key(page, 'KeyW'); await ready(page);
+    assert.equal(await page.evaluate(() => document.getElementById('preferences').open), false);
+    assert.equal(await page.evaluate(() => window.fixture.sidebarRight.openTabs.getSnapshot().length), 1);
+
+    await page.evaluate(() => { window.fixture.commitSession('s2', 'open'); }); await ready(page);
+    await key(page, 'KeyG'); await key(page, 'KeyP'); await ready(page);
+    await key(page, 'KeyW'); await ready(page);
+    assert.equal(await page.evaluate(() => window.fixture.sidebarRight.mounted.getSnapshot()), 's2');
+    await key(page, 'KeyG'); await key(page, 'KeyB'); await ready(page);
+    assert.equal(await page.evaluate(() => window.fixture.sidebarRight.mounted.getSnapshot()), 's1');
+    await key(page, 'KeyG'); await key(page, 'KeyA'); await ready(page);
+    await key(page, 'KeyG'); await key(page, 'KeyB'); await ready(page);
+    assert.equal(await page.evaluate(() => window.fixture.panelInfo.getSnapshot().activePanelId), null);
+    assert.equal(await page.evaluate(() => window.fixture.sidebarRight.mounted.getSnapshot()), 's2');
+  });
+  await check('tool keys from global pages return to the session workbench in one step and keep layout when unavailable', async page => {
+    await ready(page);
+    await key(page, 'KeyB', { shift: true }); await ready(page);
+    const second = await page.evaluate(() => window.fixture.sidebarRight.active().id);
+    await key(page, 'KeyG'); await key(page, 'KeyP'); await ready(page);
+    await key(page, 'BracketLeft'); await ready(page);
+    assert.equal(await page.evaluate(() => window.fixture.panelInfo.getSnapshot().activePanelId), null);
+    assert.equal(await page.evaluate(() => window.fixture.sidebarRight.active().id), 'b1');
+
+    await key(page, 'KeyG'); await key(page, 'KeyA'); await ready(page);
+    await key(page, 'KeyB'); await ready(page);
+    assert.equal(await page.evaluate(() => window.fixture.panelInfo.getSnapshot().activePanelId), null);
+    assert.equal(await page.evaluate(() => window.fixture.sidebarRight.active().id), 'b1');
+    assert.equal(second !== 'b1', true);
+
+    await page.evaluate(() => { window.fixture.availablePanels.delete('schedules'); });
+    await key(page, 'KeyG'); await key(page, 'KeyA'); await settle(page);
+    assert.equal(await page.locator('.sc-notice').textContent(), '定时任务页面当前不可用。');
+
+    await page.evaluate(() => { window.fixture.commitSession(undefined, 'open'); }); await ready(page);
+    await key(page, 'KeyG'); await key(page, 'KeyP'); await ready(page);
+    await key(page, 'KeyB'); await settle(page);
+    assert.equal(await page.evaluate(() => window.fixture.panelInfo.getSnapshot().activePanelId), 'plugins');
+    assert.equal(await page.locator('.sc-notice').textContent(), '先打开一个会话，再打开工具面板。');
   });
   return { passed: results.filter(result => result.pass).length, total: results.length, results };
 }

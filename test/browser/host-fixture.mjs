@@ -31,15 +31,27 @@ export function setup({ instrument = false, openState = 'open', nodes = 2000, au
   const session = store({ openState, running: false });
   const terminal = store({ writable: false, phase: 'opening' });
   const mounted = store('s1');
+  const panelInfo = store({ activePanelId: null });
+  const availablePanels = new Set(['plugins', 'schedules']);
   const openTabs = store(initialTabs);
-  let currentId = activeTabId, expanded = true, fullscreen = false, occurrence = {}, navigationRevision = 0, serial = 1;
+  let selectedSession = 's1', currentId = activeTabId, expanded = true, fullscreen = false, occurrence = {}, navigationRevision = 0, serial = 1;
   const active = () => {
     const tab = openTabs.getSnapshot().find(t => t.sessionId === mounted.getSnapshot() && t.tabId === currentId);
     return tab && { id: tab.tabId, kind: tab.kind, contentId: tab.tabId };
   };
   const target = () => ({ sessionId: mounted.getSnapshot(), tabId: currentId, paneId: 'p1', host: 'dock', occurrence, navigationRevision });
+  const renderGlobalPanel = () => {
+    const panelId = panelInfo.getSnapshot().activePanelId;
+    for (const child of document.getElementById('conversation').children) if (child.id !== 'global-panel') child.hidden = panelId !== null;
+    document.getElementById('global-panel')?.remove();
+    if (panelId !== null) {
+      const el = document.createElement('section'); el.id = 'global-panel'; el.dataset.globalPanel = panelId;
+      el.innerHTML = `<input id="panel-search" value=""><button id="panel-button">${panelId}</button>`;
+      document.getElementById('conversation').prepend(el);
+    }
+  };
   const renderTool = () => {
-    const host = document.querySelector('[data-sidebar-right-session]'); host.dataset.sidebarRightSession = mounted.getSnapshot();
+    const host = document.querySelector('[data-sidebar-right-session]'); host.dataset.sidebarRightSession = mounted.getSnapshot() ?? '';
     const strip = host.querySelector('[data-dockkit-strip]');
     strip.replaceChildren(...openTabs.getSnapshot().filter(t => t.sessionId === mounted.getSnapshot()).map(tab => {
       const el = document.createElement('span'); el.role = 'tab'; el.dataset.dockkitTab = tab.tabId;
@@ -50,16 +62,27 @@ export function setup({ instrument = false, openState = 'open', nodes = 2000, au
     pane.innerHTML = !active() ? '' : active().kind === 'terminal' ? '<div class="xterm"></div>' : '<form><input id="address" value="draft"><span id="toolbar-blank">toolbar</span></form>';
   };
   const renderPresentation = () => {
-    document.getElementById('right').dataset.sidebarRightOpen = String(expanded);
-    document.getElementById('frame').toggleAttribute('data-rightbar-fullscreen', expanded && (autoFullscreen || fullscreen));
-    document.querySelector('[data-sidebar-right-panel]').dataset.sidebarRightPanel = autoFullscreen || fullscreen ? 'fullscreen' : 'dock';
+    const shown = expanded && !!mounted.getSnapshot();
+    document.getElementById('right').dataset.sidebarRightOpen = String(shown);
+    document.getElementById('frame').toggleAttribute('data-rightbar-fullscreen', shown && (autoFullscreen || fullscreen));
+    document.querySelector('[data-sidebar-right-panel]').dataset.sidebarRightPanel = shown && (autoFullscreen || fullscreen) ? 'fullscreen' : 'dock';
+  };
+  const selectPanel = id => {
+    if (id !== null && !availablePanels.has(id)) throw new Error(`layout.selectPanel: main panel "${id}" is not registered`);
+    if (panelInfo.getSnapshot().activePanelId !== id) {
+      panelInfo.set({ activePanelId: id });
+      renderGlobalPanel();
+    }
+    const nextMounted = id === null ? selectedSession : undefined;
+    if (mounted.getSnapshot() !== nextMounted) mounted.set(nextMounted);
+    renderTool(); renderPresentation();
   };
   renderTool();
   renderPresentation();
   const cleanups = [], commands = new Map();
   const defaults = {
-    'magic-shortcuts.navigate': { code: 'Escape', modifiers: ['meta'] },
-    'shortcutter.navigate.alternate': { code: 'Semicolon', modifiers: ['meta', 'shift'] }
+    'magic-shortcuts.navigate': { code: 'Escape', modifiers: ['alt'] },
+    'shortcutter.navigate.alternate': { code: 'Escape', modifiers: ['control'] }
   };
   const describe = binding => {
     binding = { ...binding, modifiers: binding.modifiers.map(m => m === 'primary' ? 'meta' : m) };
@@ -70,7 +93,11 @@ export function setup({ instrument = false, openState = 'open', nodes = 2000, au
   const catalog = store(Object.entries(defaults).map(([id, binding]) => ({ id, ...describe(binding), modified: false, issue: null, conflicts: [] })));
   const shortcutConfig = store({ revision: 0 });
   const native = { recording: false, edits: [], conflicts: [], result: undefined, throws: false };
-  const workspace = { sessionRequested: false, startSession() { workspace.sessionRequested = true; } };
+  const workspace = {
+    sessionRequested: false, openedSessions: [],
+    startSession() { workspace.sessionRequested = true; },
+    openSession(id) { workspace.openedSessions.push(id); selectedSession = id; selectPanel(null); }
+  };
   let Preferences, preferencesRoot;
   const sidebarRight = {
     mounted, openTabs, active, isExpanded: () => expanded, commandTarget: () => target(),
@@ -139,9 +166,9 @@ export function setup({ instrument = false, openState = 'open', nodes = 2000, au
       register(command) { commands.set(command.id, command); return () => commands.delete(command.id); },
       observeFixedInput(fn) { window.fixedInput = fn; return () => { window.fixedInput = undefined; }; },
       recording(value) { native.recording = value; return Promise.resolve(); } },
-    sidebarRight, sessions: { binding: () => ({ session, ctx: {} }) },
+    sidebarRight, sessions: { binding: id => id ? { session, ctx: {} } : undefined },
     conversation: { input: { for: () => ({ focus: () => document.getElementById('composer').focus() }) } },
-    layout: { selectPanel() {}, toggleSidebar() { document.getElementById('frame').toggleAttribute('data-sidebar-collapsed'); } },
+    layout: { panelInfo, selectPanel, toggleSidebar() { document.getElementById('frame').toggleAttribute('data-sidebar-collapsed'); } },
     uiWorkspace: workspace, webTerminals: { view: () => ({ state: terminal }) }
   };
   window.__ModuleLoader__ = { load({ factory }) {
@@ -163,14 +190,15 @@ export function setup({ instrument = false, openState = 'open', nodes = 2000, au
     document.addEventListener(type, () => window.fixedInput?.({ type: 'reset' }), true);
   }
   window.fixture = {
-    session, terminal, sidebarRight, emitKey, native, catalog, shortcutConfig, workspace, commands,
+    session, terminal, sidebarRight, panelInfo, availablePanels, layout: ctx.layout, emitKey, native, catalog, shortcutConfig, workspace, commands,
     commitSession(id, openState = 'loading') {
-      session.set({ openState, running: false }); mounted.set(id); renderTool();
+      selectedSession = id; session.set({ openState, running: false }); selectPanel(null);
     },
     preferences() {
       const dialog = document.createElement('dialog'); dialog.id = 'preferences'; dialog.dataset.shortcutModal = 'settings';
-      document.body.append(dialog); dialog.showModal(); preferencesRoot = window.createRoot(dialog);
-      preferencesRoot.render(window.React.createElement(Preferences));
+      const mount = document.createElement('div'); dialog.append(mount);
+      document.body.append(dialog); preferencesRoot = window.createRoot(mount);
+      preferencesRoot.render(window.React.createElement(Preferences)); dialog.showModal();
     },
     navigate(context = {}, id = 'magic-shortcuts.navigate') { const result = commands.get(id).resolve(context); result.run?.(); return result.status; },
     invalidateTarget() { occurrence = {}; navigationRevision++; },

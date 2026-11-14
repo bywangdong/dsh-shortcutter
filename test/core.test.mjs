@@ -1,8 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { defaultConfig, validateConfig, readConfig, resolveSequence, tokenFromGesture, cycleIndex } from '../src/core.js';
+const v3Config=()=>{
+  const c=defaultConfig();c.version=3;
+  c.bindings.previous='g a';
+  delete c.bindings.plugins;delete c.bindings.schedules;
+  return c;
+};
 const v2Config=()=>{
-  const c=defaultConfig();c.version=2;
+  const c=v3Config();c.version=2;
   c.bindings.nextTab='g t';c.bindings.previousTab='g T';
   return c;
 };
@@ -23,7 +29,9 @@ test('prefixes and case-sensitive fullscreen binding survive configuration',()=>
   const c=defaultConfig();assert.ok(validateConfig(c).config);
   assert.equal(resolveSequence(c.bindings,'','R').command,'fullscreen');
   assert.equal(resolveSequence(c.bindings,'','r').command,'right');
-  assert.equal(resolveSequence(c.bindings,'g','a').command,'previous');
+  assert.equal(resolveSequence(c.bindings,'g','b').command,'previous');
+  assert.equal(resolveSequence(c.bindings,'g','p').command,'plugins');
+  assert.equal(resolveSequence(c.bindings,'g','a').command,'schedules');
   assert.equal(tokenFromGesture({code:'Slash',shift:true}),'?');
 });
 test('duplicates and prefix shadowing are rejected before settings are saved',()=>{
@@ -31,7 +39,7 @@ test('duplicates and prefix shadowing are rejected before settings are saved',()
   c.bindings.enter='g';assert.match(validateConfig(c).error,/保留/);
 });
 test('malformed and future settings do not silently overwrite stored preferences',()=>{
-  assert.ok(readConfig('{').error);assert.ok(readConfig(JSON.stringify({...defaultConfig(),version:4})).error);
+  assert.ok(readConfig('{').error);assert.ok(readConfig(JSON.stringify({...defaultConfig(),version:5})).error);
   assert.equal(readConfig(null).config.autoNavigate,true);
 });
 test('legacy autoHints is retired without losing custom bindings or automatic-navigation choice',()=>{
@@ -44,7 +52,7 @@ test('legacy autoHints is retired without losing custom bindings or automatic-na
   assert.deepEqual(readConfig(JSON.stringify(loaded.config)).config,loaded.config);
 });
 test('custom sequences and explicit unbinding work',()=>{
-  const c=defaultConfig();c.bindings.enter='a';c.bindings.previous='g p';c.bindings.files='';
+  const c=defaultConfig();c.bindings.enter='a';c.bindings.plugins='';c.bindings.previous='g p';c.bindings.files='';
   const v=validateConfig(c);assert.ok(v.config);
   assert.equal(resolveSequence(v.config.bindings,'','a').command,'enter');
   assert.equal(resolveSequence(v.config.bindings,'g','p').command,'previous');
@@ -72,7 +80,10 @@ test('older settings gain new-session without resetting preferences or rewriting
   const raw=JSON.stringify(legacy),loaded=readConfig(raw);
   assert.equal(loaded.config.bindings.newSession,'n');
   assert.equal(loaded.config.autoNavigate,false);
-  for(const [id,key] of Object.entries(legacy.bindings))if(!['settings','autoNav','help','nextTab','previousTab'].includes(id))assert.equal(loaded.config.bindings[id],key);
+  for(const [id,key] of Object.entries(legacy.bindings))if(!['settings','autoNav','help','nextTab','previousTab','previous'].includes(id))assert.equal(loaded.config.bindings[id],key);
+  assert.equal(loaded.config.bindings.previous,'g b');
+  assert.equal(loaded.config.bindings.plugins,'g p');
+  assert.equal(loaded.config.bindings.schedules,'g a');
   assert.equal(loaded.config.bindings.settings,'g s');
   assert.equal(JSON.stringify(legacy),raw);
 });
@@ -122,7 +133,8 @@ test('older v2 preferences gain w without changing existing keys or stored input
   const old=v2Config();delete old.bindings.closeTab;old.bindings.files='f';old.autoNavigate=false;
   const raw=JSON.stringify(old),result=readConfig(raw);
   assert.equal(result.config.bindings.closeTab,'w');assert.equal(result.config.autoNavigate,false);
-  for(const [id,key] of Object.entries(old.bindings))if(!['nextTab','previousTab'].includes(id))assert.equal(result.config.bindings[id],key);
+  for(const [id,key] of Object.entries(old.bindings))if(!['nextTab','previousTab','previous'].includes(id))assert.equal(result.config.bindings[id],key);
+  assert.equal(result.config.bindings.previous,'g b');
   assert.equal(JSON.stringify(old),raw);
 });
 test('v1 and v2 migration preserve custom w, disabled close and a custom close sequence',()=>{
@@ -152,7 +164,7 @@ test('brackets switch adjacent tools directly and retire the old default g seque
 test('v2 default tab keys migrate once without rewriting storage or resetting other preferences',()=>{
   const old=v2Config();old.autoNavigate=false;old.bindings.enter='a';old.bindings.files='';
   const raw=JSON.stringify(old),loaded=readConfig(raw);
-  assert.equal(loaded.config.version,3);assert.equal(loaded.config.autoNavigate,false);
+  assert.equal(loaded.config.version,4);assert.equal(loaded.config.autoNavigate,false);
   assert.equal(loaded.config.bindings.nextTab,']');assert.equal(loaded.config.bindings.previousTab,'[');
   assert.equal(loaded.config.bindings.enter,'a');assert.equal(loaded.config.bindings.files,'');
   assert.equal(JSON.stringify(old),raw);
@@ -180,9 +192,45 @@ test('bracket configuration supports reassignment, prefix suffixes and normal co
     const invalid=defaultConfig();invalid.bindings.nextTab=key;assert.ok(validateConfig(invalid).error);
   }
 });
-test('migration validates old data before replacing tab defaults and never repairs a corrupt v3',()=>{
+test('migration validates old data before replacing tab defaults and never repairs a corrupt v3 or v4',()=>{
   const invalid=v2Config();invalid.bindings.files='g t';const raw=JSON.stringify(invalid);
   assert.ok(readConfig(raw).error);assert.equal(JSON.stringify(invalid),raw);
   invalid.bindings.files='[';assert.ok(validateConfig(invalid).error);
-  const current=defaultConfig();delete current.bindings.closeTab;assert.ok(validateConfig(current).error);
+  const brokenV3=v3Config();delete brokenV3.bindings.closeTab;assert.ok(validateConfig(brokenV3).error);
+  const dupV3=v3Config();dupV3.bindings.files='g a';assert.ok(validateConfig(dupV3).error);
+  for(const missing of ['closeTab','plugins','schedules']) {
+    const current=defaultConfig();delete current.bindings[missing];assert.ok(validateConfig(current).error);
+  }
+});
+test('v3 migrates previous default g a to g b, adds g p and g a, and allows deliberate v4 reassignment',()=>{
+  const old=v3Config();old.autoNavigate=false;
+  const raw=JSON.stringify(old),loaded=readConfig(raw);
+  assert.equal(loaded.notice,undefined);assert.equal(loaded.config.version,4);assert.equal(loaded.config.autoNavigate,false);
+  assert.equal(loaded.config.bindings.previous,'g b');
+  assert.equal(loaded.config.bindings.plugins,'g p');
+  assert.equal(loaded.config.bindings.schedules,'g a');
+  assert.equal(JSON.stringify(old),raw);
+  const saved=loaded.config;saved.bindings.schedules='';saved.bindings.previous='g a';
+  assert.deepEqual(readConfig(JSON.stringify(saved)).config,saved);
+});
+test('v1–v3 migration preserves custom g p, g a, g b and explicit unbinding with clear notices',()=>{
+  for(const make of [legacyConfig,v2Config,v3Config]) {
+    const customP=make();customP.bindings.files='g p';
+    const r1=validateConfig(customP);
+    assert.equal(r1.config.bindings.files,'g p');assert.equal(r1.config.bindings.plugins,'');
+    assert.equal(r1.config.bindings.previous,'g b');assert.equal(r1.config.bindings.schedules,'g a');
+    assert.match(r1.notice,/g p 已有自定义用途/);
+
+    const customA=make();customA.bindings.previous='';customA.bindings.files='g a';
+    const r2=validateConfig(customA);
+    assert.equal(r2.config.bindings.previous,'');assert.equal(r2.config.bindings.files,'g a');
+    assert.equal(r2.config.bindings.plugins,'g p');assert.equal(r2.config.bindings.schedules,'');
+    assert.match(r2.notice,/g a 已有自定义用途/);
+
+    const customB=make();customB.bindings.files='g b';
+    const r3=validateConfig(customB);
+    assert.equal(r3.config.bindings.files,'g b');assert.equal(r3.config.bindings.previous,'');
+    assert.equal(r3.config.bindings.plugins,'g p');assert.equal(r3.config.bindings.schedules,'g a');
+    assert.match(r3.notice,/g b 已有自定义用途/);
+  }
 });

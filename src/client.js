@@ -19,10 +19,10 @@ window.__ModuleLoader__.load({
     const HINT_RESUME_MS = 800;
     const PREFIX_TIMEOUT_MS = 4000;
     const RETURN_COMMANDS = [
-      { id: RETURN_ID, title: "主快捷键", label: "Shortcutter · 返回导航", fallback: "⌘ Esc",
-        binding: { code: "Escape", modifiers: ["primary"] } },
-      { id: RETURN_ALT_ID, title: "备用快捷键", label: "Shortcutter · 返回导航（备用）", fallback: "⇧ ⌘ ;",
-        binding: { code: "Semicolon", modifiers: ["primary", "shift"] } }
+      { id: RETURN_ID, title: "主快捷键", label: "Shortcutter · 返回导航", fallback: "⌥ Esc",
+        binding: { code: "Escape", modifiers: ["alt"] } },
+      { id: RETURN_ALT_ID, title: "备用快捷键", label: "Shortcutter · 返回导航（备用）", fallback: "⌃ Esc",
+        binding: { code: "Escape", modifiers: ["control"] } }
     ];
 
     function apply(ctx) {
@@ -48,7 +48,7 @@ window.__ModuleLoader__.load({
         const active = ctx.sidebarRight.active();
         // Targets are fresh host objects: compare their occurrence and navigation
         // identity, not the wrapper. A pending view commit can explicitly wake us.
-        const next = [navigating, hints, entryHint, prefix, prefixShown, area, navigationScope, pending, notice,
+        const next = [navigating, hints, entryHint, prefix, prefixShown, area, activePanel(), navigationScope, pending, notice,
           config, raw, storageError, mounted(), active?.id, active?.kind, active?.contentId,
           ctx.sidebarRight.isExpanded(), target?.sessionId, target?.paneId, target?.host,
           target?.tabId, target?.occurrence, target?.navigationRevision];
@@ -102,6 +102,7 @@ window.__ModuleLoader__.load({
       };
       const clearPrefixTimers = () => { prefixToken++; clearTimeout(prefixShowTimer); clearTimeout(prefixExpireTimer); };
       const mounted = () => ctx.sidebarRight.mounted.getSnapshot();
+      const activePanel = () => ctx.layout.panelInfo?.getSnapshot()?.activePanelId || null;
       const tabs = () => ctx.sidebarRight.openTabs.getSnapshot().filter(t => t.sessionId === mounted());
       const own = element => !!element && (!!root?.contains(element) || !!layer?.contains(element));
       const visible = el => !!el?.isConnected && !!el.getClientRects().length && getComputedStyle(el).visibility !== "hidden";
@@ -228,12 +229,18 @@ window.__ModuleLoader__.load({
       const enterContent = () => {
         cancelPending(); prefix = "";
         if (navigationScope) {
-          const input = [...navigationScope.querySelectorAll('input, textarea, select, [contenteditable], [role="textbox"], [role="combobox"]')]
+          const input = [...navigationScope.querySelectorAll('input, textarea, select, [contenteditable], [role="textbox"], [role="searchbox"], [role="combobox"]')]
             .find(element => visible(element) && !element.disabled && isNavigationInput(element));
           if (!input) return;
           input.focus({ preventScroll: true });
+        } else if (area === "conversation" && activePanel()) {
+          const input = [...(columns().conversation?.querySelectorAll('input, textarea, select, [contenteditable], [role="textbox"], [role="searchbox"], [role="combobox"]') || [])]
+            .find(element => visible(element) && !element.disabled && isNavigationInput(element));
+          if (!input) throw new Error("当前页面没有可直接输入的区域。");
+          input.focus({ preventScroll: true });
         } else if (area === "conversation") {
-          const binding = ctx.sessions.binding(mounted());
+          const sessionId = mounted();
+          const binding = sessionId && ctx.sessions.binding(sessionId);
           if (!binding) throw new Error("当前还没有可输入的对话。");
           ctx.conversation.input.for(binding.ctx).focus();
         } else {
@@ -271,6 +278,22 @@ window.__ModuleLoader__.load({
         cancelPending();
         actions.open();
       };
+      const openGlobalPanel = panelId => {
+        cancelPending();
+        try { ctx.layout.selectPanel(panelId); }
+        catch { throw new Error(panelId === "plugins" ? "插件页面当前不可用。" : "定时任务页面当前不可用。"); }
+        area = "conversation"; target = undefined;
+        requestNavigation(undefined, true);
+      };
+      const revealSession = message => {
+        const prev = activePanel();
+        if (prev) ctx.layout.selectPanel(null);
+        if (!mounted()) {
+          if (prev) ctx.layout.selectPanel(prev);
+          throw new Error(message);
+        }
+        return prev;
+      };
       const run = id => {
         if (!alive) return;
         // A command consumes the guide. Its asynchronous tab/session/focus
@@ -281,7 +304,14 @@ window.__ModuleLoader__.load({
           // modal close helper; ordinary mode changes never close a layer.
           if (navigationScope && !["enter", "settings", "closeTab"].includes(id)) closeTopModal(document);
           if (id === "enter") enterContent();
-          else if (id === "closeTab") closeTool();
+          else if (id === "closeTab") {
+            if (navigationScope) {
+              cancelPending(); closeTopModal(document); requestNavigation(undefined, true);
+            } else if (activePanel()) {
+              cancelPending(); ctx.layout.selectPanel(null);
+              area = "conversation"; target = undefined; requestNavigation(undefined, true);
+            } else closeTool();
+          }
           else if (id === "newSession") {
             ctx.uiWorkspace.startSession();
             area = "conversation"; target = undefined; requestNavigation();
@@ -297,17 +327,25 @@ window.__ModuleLoader__.load({
             if (fullscreen && ctx.sidebarRight.isExpanded() && captured) ctx.sidebarRight.toggleFullscreen(captured);
             ctx.layout.selectPanel(null); area = "conversation"; target = undefined; requestNavigation();
           }
+          else if (id === "plugins" || id === "schedules") openGlobalPanel(id);
           else if (id === "right") {
-            if (!mounted()) throw new Error("先打开一个会话。");
+            revealSession("先打开一个会话。");
             ctx.sidebarRight.toggleExpanded();
             area = ctx.sidebarRight.isExpanded() ? ctx.sidebarRight.active()?.kind || "right" : "conversation";
             target = ctx.sidebarRight.commandTarget(null); requestNavigation();
-          } else if (["files", "browser", "terminal"].includes(id)) openTool(id);
-          else if (id === "newBrowser" || id === "newTerminal") openTool(id === "newBrowser" ? "browser" : "terminal", true);
-          else if (id === "fullscreen") {
-            if (!mounted()) throw new Error("先打开一个会话。");
+          } else if (["files", "browser", "terminal"].includes(id)) {
+            revealSession("先打开一个会话，再打开工具面板。");
+            openTool(id);
+          } else if (id === "newBrowser" || id === "newTerminal") {
+            revealSession("先打开一个会话，再打开工具面板。");
+            openTool(id === "newBrowser" ? "browser" : "terminal", true);
+          } else if (id === "fullscreen") {
+            const prev = revealSession("先打开一个会话。");
             let captured = currentTarget();
-            if (captured?.host === "float") throw new Error("悬浮面板暂不支持放大或恢复。");
+            if (captured?.host === "float") {
+              if (prev) ctx.layout.selectPanel(prev);
+              throw new Error("悬浮面板暂不支持放大或恢复。");
+            }
             const opening = !ctx.sidebarRight.isExpanded();
             if (opening) {
               ctx.sidebarRight.toggleExpanded();
@@ -328,8 +366,13 @@ window.__ModuleLoader__.load({
             area = "conversation"; target = undefined;
             ctx.uiWorkspace.openSession(previousSession); requestNavigation();
           } else if (id === "nextTab" || id === "previousTab") {
+            const prev = activePanel();
+            if (prev) ctx.layout.selectPanel(null);
             const list = orderedTabs();
-            if (list.length < 2) throw new Error("当前会话只有一个工具标签。");
+            if (list.length < 2) {
+              if (prev) ctx.layout.selectPanel(prev);
+              throw new Error("当前会话只有一个工具标签。");
+            }
             const next = list[cycleIndex(list.length, list.findIndex(t => t.tabId === ctx.sidebarRight.active()?.id), id === "nextTab" ? 1 : -1)];
             ctx.sidebarRight.focus(next.tabId);
             if (!ctx.sidebarRight.isExpanded()) ctx.sidebarRight.toggleExpanded();
@@ -337,10 +380,18 @@ window.__ModuleLoader__.load({
             area = next.kind; target = ctx.sidebarRight.commandTarget(null); requestNavigation(target, true);
           } else if (id === "settings") openSettings();
           publish();
-        } catch (error) { tell(error instanceof Error ? error.message : "操作未完成，请使用原有界面重试。"); }
+        } catch (error) {
+          const text = error instanceof Error
+            ? (/no session surface is mounted/.test(error.message) ? "已回到当前会话，请再按一次打开工具。" : error.message)
+            : "操作未完成，请使用原有界面重试。";
+          tell(text);
+        }
       };
       const keyCaps = sequence => sequence ? sequence.split(" ").map((key, i) => h("kbd", { key: i }, key === "Space" ? "space" : key)) : h("span", { className: "sc-muted" }, "未绑定");
       const areas = { sidebar: "左侧栏", conversation: "对话", terminal: "终端", browser: "浏览器", files: "文件", right: "工具面板" };
+      const panelTitles = { plugins: "插件", schedules: "定时任务" };
+      const surfaceArea = () => navigationScope ? "settings" : area === "conversation" && activePanel() ? activePanel() : area;
+      const surfaceLabel = () => navigationScope ? "设置" : area === "conversation" && activePanel() ? panelTitles[activePanel()] || "页面" : areas[area] || "工具面板";
 
       function FocusCue() {
         const [cue, setCue] = React.useState(null);
@@ -378,7 +429,8 @@ window.__ModuleLoader__.load({
             const crowded = [[14, 14], [8, 14], [14, 8]].some(([dx, dy]) =>
               document.elementFromPoint(left + dx, top + dy)?.closest?.('[role="tab"], button, a[href], input, [role="button"]'));
             const inset = left <= 0.5 && top <= 0.5 ? 7.5 : crowded ? 3 : 6;
-            update({ key: `${mounted()}:${scope ? "settings" : right ? captured?.paneId : area}`, area: scope ? "settings" : area, left, top, width, inset });
+            const cueArea = surfaceArea();
+            update({ key: `${mounted() || activePanel() || ""}:${scope ? "settings" : right ? captured?.paneId : cueArea}`, area: cueArea, left, top, width, inset });
           };
           const schedule = () => { if (!stopped && !frameId) frameId = requestAnimationFrame(measure); };
           const resize = new ResizeObserver(schedule);
@@ -506,7 +558,7 @@ window.__ModuleLoader__.load({
           h("div", { className: "sc-settings-body" },
             h("section", { className: "sc-preference-section" },
               h("h3", null, "返回导航"),
-              h("p", null, `左侧栏和对话中按 Esc 返回导航；终端、网页使用下面的组合键，两个同时有效。${config.bindings.enter ? `按 ${config.bindings.enter}` : "点击"}进入内容。`),
+              h("p", null, `左侧栏、对话和全局页面中按 Esc 返回导航；终端、网页使用下面的组合键，两个同时有效。${config.bindings.enter ? `按 ${config.bindings.enter}` : "点击"}进入内容。`),
               h("p", { className: "sc-muted" }, "弹窗、菜单和输入法优先处理 Esc。对话生成中保留双 Esc 停止输出，也可用下面的组合键返回导航。"),
               h("div", { className: "sc-return-list" }, RETURN_COMMANDS.map(command => {
                 const row = returnRow(command.id);
@@ -532,7 +584,7 @@ window.__ModuleLoader__.load({
               h("p", null, "设置页也使用这个规则。终端、网页、菜单保留原操作。鼠标点击、输入框失焦和切回窗口时安静进入导航态，只显示面板左上角的小点。按返回导航组合键或 Esc 返回后，若稍作停顿，才显示约 2 秒的按键提示；紧接着按键则不显示。按 ? 可随时展开或收起完整提示；按 g 后停顿也会显示跳转选项，4 秒内未按第二个键自动取消。")),
             h("section", { className: "sc-preference-section" },
               h("div", { className: "sc-section-heading" }, h("h3", null, "导航键位"), h("button", { type: "button", onClick: () => setDraft({ ...draft, bindings: defaultConfig().bindings }) }, "恢复默认键位")),
-              h("p", null, "单键区分大小写。b / t 打开浏览器 / 终端：已有时回到最近使用的标签，没有时新建，重复按不会切换。B / T（Shift + b / t）始终新建。[ / ] 按标签栏顺序切换标签。打开、切换或新建后保持导航态，按 i 或点击内容进入输入。组合键依次按下，例如 g a、g s。留空可取消绑定。"),
+              h("p", null, "单键区分大小写。b / t 打开浏览器 / 终端：已有时回到最近使用的标签，没有时新建，重复按不会切换。B / T（Shift + b / t）始终新建。[ / ] 按标签栏顺序切换标签；w 关闭当前工具标签，在设置、插件或定时任务页也会关闭当前页面。打开、切换或新建后保持导航态，按 i 或点击内容进入输入。组合键依次按下，例如 g p、g a、g b、g s。留空可取消绑定。"),
               h("div", { className: "sc-binding-list" }, COMMANDS.map(command => h("label", { className: "sc-binding-row", key: command.id }, h("span", null, command.label), h("input", { "aria-label": command.label, value: draft.bindings[command.id], placeholder: "未绑定", maxLength: 16, spellCheck: false, autoCapitalize: "off", autoComplete: "off", onChange: e => setDraft({ ...draft, bindings: { ...draft.bindings, [command.id]: e.target.value } }) })))),
               h("p", { className: "sc-muted" }, "g · 跳转，? · 提示，Esc · 返回一层。这三个入口固定保留。Space 保持原有操作。"))),
           h("footer", { className: "sc-preferences-footer" }, h("p", { role: "status", className: "sc-status" }, message), h("button", { type: "button", className: "sc-primary", onClick: save, disabled: !!recording || busy }, "保存设置")));
@@ -545,7 +597,7 @@ window.__ModuleLoader__.load({
         const terminalTab = pending && currentTab?.kind === "terminal" && ctx.sidebarRight.isExpanded() ? currentTab : undefined;
         const model = React.useMemo(() => terminalTab && ctx.webTerminals.view(sessionId, terminalTab.id, terminalTab.contentId), [sessionId, terminalTab?.id, terminalTab?.contentId]);
         const state = React.useSyncExternalStore(fn => model ? model.state.subscribe(fn) : () => {}, () => model?.state.getSnapshot());
-        const session = pending ? ctx.sessions.binding(sessionId)?.session : undefined;
+        const session = pending && sessionId ? ctx.sessions.binding(sessionId)?.session : undefined;
         const subscribeSession = React.useCallback(fn => session ? session.subscribe(fn) : () => {}, [session]);
         const openState = React.useSyncExternalStore(subscribeSession, () => session?.getSnapshot().openState);
         const [committed, setCommitted] = React.useState();
@@ -601,12 +653,12 @@ window.__ModuleLoader__.load({
             onPointerMove: hoverMove, onFocusCapture: pauseHint,
             onPointerLeave: event => { hoverPoint = undefined; if (!event.currentTarget.contains(document.activeElement)) resumeHint(); },
             onBlurCapture: event => { if (!event.currentTarget.contains(event.relatedTarget) && !event.currentTarget.matches(":hover")) resumeHint(); } },
-            h("header", { className: "sc-panel-header" }, h("span", { className: "sc-panel-title" }, h("span", { className: "sc-dot", "aria-hidden": true }), prefix === "g" ? "跳转" : "导航"), h("span", { className: "sc-muted" }, navigationScope ? "设置" : areas[area] || "工具面板"),
+            h("header", { className: "sc-panel-header" }, h("span", { className: "sc-panel-title" }, h("span", { className: "sc-dot", "aria-hidden": true }), prefix === "g" ? "跳转" : "导航"), h("span", { className: "sc-muted" }, surfaceLabel()),
               h("button", { type: "button", className: "sc-icon-button", "aria-label": "打开 DSH 设置", title: "打开 DSH 设置", onPointerDown: keepFocus, onClick: () => run("settings") }, "⚙")),
-            h("div", { className: "sc-grid" }, items.map(c => h("button", { type: "button", className: "sc-key-row", key: c.id, "data-sc-command": c.id, onPointerDown: keepFocus, onClick: () => run(c.id) }, h("span", { className: "sc-keys" }, keyCaps(prefix ? config.bindings[c.id].split(" ")[1] : config.bindings[c.id])), h("span", null, c.label)))),
+            h("div", { className: "sc-grid" }, items.map(c => h("button", { type: "button", className: "sc-key-row", key: c.id, "data-sc-command": c.id, onPointerDown: keepFocus, onClick: () => run(c.id) }, h("span", { className: "sc-keys" }, keyCaps(prefix ? config.bindings[c.id].split(" ")[1] : config.bindings[c.id])), h("span", null, c.id === "closeTab" ? (navigationScope ? "关闭设置" : activePanel() ? "关闭当前页面" : "关闭当前工具标签") : c.label)))),
             !prefix && h("div", { className: "sc-prefix-row" }, [ ["g", "跳转"] ].map(([key, label]) => h("button", { type: "button", key, onPointerDown: keepFocus, onClick: () => { clearHint(); enterPrefix(key, true); hints = false; (navigationScope || anchor).focus({ preventScroll: true }); publish(); } }, h("span", { className: "sc-keys" }, keyCaps(key)), label, h("span", { className: "sc-chevron", "aria-hidden": true }, "›")))),
-            h("footer", { className: "sc-panel-footer" }, h("span", null, prefix ? "依次按键" : area === "sidebar" ? "侧栏内 Esc 返回" : area === "conversation" ? "对话内 Esc 返回" : `${returnLabel()} 返回导航`), h("span", null, "esc ", prefix ? "返回" : "收起"))));
-        return h("div", { className: "sc-root", ref: el => { root = el; }, "data-sc-navigation": navigating ? "true" : "false", "data-sc-area": navigationScope ? "settings" : area, "data-sc-prefix": prefix },
+            h("footer", { className: "sc-panel-footer" }, h("span", null, prefix ? "依次按键" : area === "sidebar" ? "侧栏内 Esc 返回" : area === "conversation" ? (activePanel() ? "页内 Esc 返回" : "对话内 Esc 返回") : `${returnLabel()} 返回导航`), h("span", null, "esc ", prefix ? "返回" : "收起"))));
+        return h("div", { className: "sc-root", ref: el => { root = el; }, "data-sc-navigation": navigating ? "true" : "false", "data-sc-area": surfaceArea(), "data-sc-prefix": prefix },
           h("div", { id: "sc-navigation-anchor", ref: el => { anchor = el; }, className: "sc-anchor", tabIndex: -1, role: "group", "aria-label": `导航模式，问号显示快捷键，${config.bindings.enter || "点击"}进入内容` }),
           // shell.overlay is below fullscreen tools (20 vs 40). Keep our anchor
           // in that slot for layout ownership, but paint our pointer-transparent
@@ -625,8 +677,8 @@ window.__ModuleLoader__.load({
       ctx.effect(() => ctx.slots.inject("settings.section", () => ctx.slots.register({
         name: "settings.section", id: "shortcutter", order: 80, label: "Shortcutter"
       }, Preferences)), "shortcutter.settings");
-      // Two independently editable return commands share one action. ⌘ Esc is
-      // the one-handed default; ⇧⌘; still works when macOS claims ⌘ Esc.
+      // Two independently editable return commands share one action. ⌥ Esc is
+      // the one-handed default; ⌃ Esc is ready alongside it (e.g. remapped Caps).
       for (const spec of RETURN_COMMANDS) ctx.effect(() => {
         const command = {
           id: spec.id, label: () => spec.label, aliases: [],
@@ -686,7 +738,7 @@ window.__ModuleLoader__.load({
             const sessionId = c.target.closest("[data-conversation-session]")?.getAttribute("data-conversation-session") || mounted();
             // Keep the host's double-Escape stop sequence even if observer
             // registration order changes after a plugin reload.
-            if (from === "conversation" && ctx.sessions.binding(sessionId)?.session.getSnapshot().running) return;
+            if (from === "conversation" && sessionId && ctx.sessions.binding(sessionId)?.session.getSnapshot().running) return;
             input.consume(); area = from; target = undefined; take(undefined, false, null, true);
             return;
           }
@@ -706,15 +758,31 @@ window.__ModuleLoader__.load({
       ctx.effect(() => {
         const changed = () => {
           const id = mounted();
+          if (!id && activePanel()) {
+            if (!seenSession) { seenSession = true; area = "conversation"; target = undefined; requestNavigation(); }
+            return;
+          }
           if (seenSession && id === lastSession) return;
           seenSession = true;
-          if (lastSession) previousSession = lastSession;
+          if (lastSession && id !== lastSession) previousSession = lastSession;
           lastSession = id; area = "conversation"; target = undefined;
           requestNavigation();
         };
         const off = ctx.sidebarRight.mounted.subscribe(changed); changed();
         return off;
       }, "shortcutter.session");
+      ctx.effect(() => {
+        if (!ctx.layout.panelInfo?.subscribe) return () => {};
+        let lastPanel = activePanel();
+        return ctx.layout.panelInfo.subscribe(() => {
+          const panel = activePanel();
+          if (panel === lastPanel) return;
+          lastPanel = panel;
+          area = "conversation"; target = undefined;
+          requestNavigation();
+          publish();
+        });
+      }, "shortcutter.panel");
       ctx.effect(() => {
         let timer, disposed = false, inventory;
         const read = () => {

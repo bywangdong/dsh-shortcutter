@@ -16,31 +16,31 @@ export const COMMANDS = [
   { id: "newSession", label: "新建会话", key: "n", group: "操作" },
   { id: "newBrowser", label: "新建浏览器", key: "B", group: "操作" },
   { id: "newTerminal", label: "新建终端", key: "T", group: "操作" },
-  { id: "closeTab", label: "关闭当前工具标签", key: "w", group: "操作" },
+  { id: "closeTab", label: "关闭当前标签 / 页面", key: "w", group: "操作" },
   { id: "fullscreen", label: "放大 / 恢复面板", key: "R", group: "操作" },
-  { id: "previous", label: "上一个会话", key: "g a", group: "跳转" },
+  { id: "previous", label: "上一个会话", key: "g b", group: "跳转" },
   { id: "nextTab", label: "下一个工具标签", key: "]", group: "跳转" },
   { id: "previousTab", label: "上一个工具标签", key: "[", group: "跳转" },
+  { id: "plugins", label: "打开插件", key: "g p", group: "跳转" },
+  { id: "schedules", label: "打开定时任务", key: "g a", group: "跳转" },
   { id: "settings", label: "打开 DSH 设置", key: "g s", group: "跳转" }
 ];
 export function defaultConfig() {
-  return { version: 3, autoNavigate: true, bindings: Object.fromEntries(COMMANDS.map(c => [c.id, c.key])) };
+  return { version: 4, autoNavigate: true, bindings: Object.fromEntries(COMMANDS.map(c => [c.id, c.key])) };
 }
 export function normalizeSequence(value) {
   return String(value).trim().split(/\s+/).map(k => k.toLowerCase() === "space" ? "Space" : k).join(" ");
 }
 export function validateConfig(value) {
-  if (!value || ![1, 2, 3].includes(value.version) || typeof value.autoNavigate !== "boolean" || !value.bindings || typeof value.bindings !== "object" || Array.isArray(value.bindings)) return { error: "设置格式不受支持，已保留原始数据。" };
+  if (!value || ![1, 2, 3, 4].includes(value.version) || typeof value.autoNavigate !== "boolean" || !value.bindings || typeof value.bindings !== "object" || Array.isArray(value.bindings)) return { error: "设置格式不受支持，已保留原始数据。" };
   if (value.version === 1) return migrateLegacyConfig(value);
-  const config = defaultConfig(), used = new Map(), notes = [];
+  const config = defaultConfig(), used = new Map(), notes = [], missing = [];
   config.autoNavigate = value.autoNavigate;
   for (const command of COMMANDS) {
-    let binding = value.bindings[command.id];
-    if (value.version === 2 && command.id === "closeTab" && binding === undefined) {
-      const occupied = Object.values(value.bindings).some(key => typeof key === "string" && normalizeSequence(key) === command.key);
-      binding = occupied ? "" : command.key;
-      if (occupied) notes.push("w 已有自定义用途，「关闭当前工具标签」暂未绑定");
-    }
+    const binding = value.bindings[command.id];
+    const canBackfill = binding === undefined && ((value.version === 2 && command.id === "closeTab")
+      || (value.version < 4 && ["plugins", "schedules"].includes(command.id)));
+    if (canBackfill) { missing.push(command); continue; }
     if (typeof binding !== "string") return { error: `${command.label}缺少键位。` };
     const key = normalizeSequence(binding);
     if (["g", "?"].includes(key)) return { error: "g 和 ? 保留给导航菜单。" };
@@ -50,16 +50,35 @@ export function validateConfig(value) {
     if (key) used.set(key, command.label);
     config.bindings[command.id] = key;
   }
-  // Only old defaults move. A v3 user can still deliberately assign g t / g T,
+  // Only old defaults move. A v4 user can still deliberately assign g t / g T / g a,
   // and custom bindings or explicit unbinding always survive an upgrade.
   if (value.version === 2) {
-    if (config.bindings.nextTab === "g t") config.bindings.nextTab = "]";
-    if (config.bindings.previousTab === "g T") config.bindings.previousTab = "[";
+    if (config.bindings.nextTab === "g t") { used.delete("g t"); config.bindings.nextTab = "]"; used.set("]", "下一个工具标签"); }
+    if (config.bindings.previousTab === "g T") { used.delete("g T"); config.bindings.previousTab = "["; used.set("[", "上一个工具标签"); }
+  }
+  if (value.version < 4 && config.bindings.previous === "g a") {
+    used.delete("g a");
+    if (used.has("g b")) {
+      config.bindings.previous = "";
+      notes.push("g b 已有自定义用途，「上一个会话」暂未绑定");
+    } else {
+      config.bindings.previous = "g b";
+      used.set("g b", "上一个会话");
+    }
+  }
+  for (const command of missing) {
+    if (used.has(command.key)) {
+      config.bindings[command.id] = "";
+      notes.push(`${command.key} 已有自定义用途，「${command.label}」暂未绑定`);
+    } else {
+      config.bindings[command.id] = command.key;
+      used.set(command.key, command.label);
+    }
   }
   return { config, ...(notes.length ? { notice: notes.join("；") } : {}) };
 }
 function migrateLegacyConfig(value) {
-  const legacy = COMMANDS.filter(c => !["newBrowser", "newTerminal", "closeTab"].includes(c.id)).concat([
+  const legacy = COMMANDS.filter(c => !["newBrowser", "newTerminal", "closeTab", "plugins", "schedules"].includes(c.id)).concat([
     { id: "autoNav", label: "切换自动导航" }, { id: "help", label: "快捷键总览" }
   ]);
   const bindings = {}, used = new Set(), notes = [];
@@ -69,6 +88,9 @@ function migrateLegacyConfig(value) {
     let key = value.bindings[command.id];
     if (command.id === "newSession" && key === undefined) {
       key = Object.values(value.bindings).some(k => typeof k === "string" && normalizeSequence(k) === "n") ? "" : "n";
+    } else if (command.id === "previous" && value.bindings.previous === "g b") {
+      // Keep explicit v1 custom g b intact; untouched v1 default was g a.
+      key = "g b";
     }
     if (typeof key !== "string") return { error: `${command.label}缺少键位。` };
     key = normalizeSequence(key);
