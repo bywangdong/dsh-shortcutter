@@ -40,14 +40,24 @@ export function setup({ instrument = false, openState = 'open', nodes = 2000, au
     return tab && { id: tab.tabId, kind: tab.kind, contentId: tab.tabId };
   };
   const target = () => ({ sessionId: mounted.getSnapshot(), tabId: currentId, paneId: 'p1', host: 'dock', occurrence, navigationRevision });
+  let Preferences, preferencesRoot, activeBundle = null;
+  const registeredSlots = [];
   const renderGlobalPanel = () => {
     const panelId = panelInfo.getSnapshot().activePanelId;
+    preferencesRoot?.unmount(); preferencesRoot = undefined;
     for (const child of document.getElementById('conversation').children) if (child.id !== 'global-panel') child.hidden = panelId !== null;
     document.getElementById('global-panel')?.remove();
     if (panelId !== null) {
       const el = document.createElement('section'); el.id = 'global-panel'; el.dataset.globalPanel = panelId;
-      el.innerHTML = `<input id="panel-search" value=""><button id="panel-button">${panelId}</button>`;
-      document.getElementById('conversation').prepend(el);
+      if (panelId === 'plugins' && activeBundle === 'dsh-shortcutter' && Preferences) {
+        el.innerHTML = `<div data-plugin-detail="dsh-shortcutter"><div id="bundle-config"></div></div>`;
+        document.getElementById('conversation').prepend(el);
+        preferencesRoot = window.createRoot(el.querySelector('#bundle-config'));
+        preferencesRoot.render(window.React.createElement(Preferences, { view: 'page' }));
+      } else {
+        el.innerHTML = `<input id="panel-search" value=""><button id="panel-button">${panelId}</button>`;
+        document.getElementById('conversation').prepend(el);
+      }
     }
   };
   const renderTool = () => {
@@ -69,6 +79,7 @@ export function setup({ instrument = false, openState = 'open', nodes = 2000, au
   };
   const selectPanel = id => {
     if (id !== null && !availablePanels.has(id)) throw new Error(`layout.selectPanel: main panel "${id}" is not registered`);
+    if (id !== 'plugins') activeBundle = null;
     if (panelInfo.getSnapshot().activePanelId !== id) {
       panelInfo.set({ activePanelId: id });
       renderGlobalPanel();
@@ -97,7 +108,25 @@ export function setup({ instrument = false, openState = 'open', nodes = 2000, au
     startSession() { workspace.sessionRequested = true; },
     openSession(id) { workspace.openedSessions.push(id); selectedSession = id; selectPanel(null); }
   };
-  let Preferences, preferencesRoot;
+  const pluginNavigation = {
+    openedBundles: [],
+    openList() { activeBundle = null; if (panelInfo.getSnapshot().activePanelId !== 'plugins') selectPanel('plugins'); else renderGlobalPanel(); },
+    openBundle(name) {
+      pluginNavigation.openedBundles.push(name);
+      activeBundle = name;
+      if (panelInfo.getSnapshot().activePanelId !== 'plugins') selectPanel('plugins');
+      else renderGlobalPanel();
+    }
+  };
+  const openHostSettings = () => {
+    let dialog = document.getElementById('host-settings');
+    if (!dialog) {
+      dialog = document.createElement('dialog'); dialog.id = 'host-settings'; dialog.dataset.shortcutModal = 'settings';
+      dialog.innerHTML = '<button id="host-settings-ok">OK</button>';
+      document.body.append(dialog);
+    }
+    if (!dialog.open) dialog.showModal();
+  };
   const sidebarRight = {
     mounted, openTabs, active, isExpanded: () => expanded, commandTarget: () => target(),
     isTargetCurrent: captured => captured.sessionId === mounted.getSnapshot() && captured.tabId === currentId
@@ -133,12 +162,19 @@ export function setup({ instrument = false, openState = 'open', nodes = 2000, au
   };
   const ctx = {
     effect(fn) { cleanups.push(fn()); },
+    get(name) { return name === 'pluginNavigation' ? pluginNavigation : undefined; },
     slots: {
       inject(_name, fn) { return fn(); },
+      entriesOfSlot(name) {
+        return name === 'sidebar.settings'
+          ? [{ children: { 'settings.section': [] }, store: { create: () => ({ actions: { open: openHostSettings } }) } }]
+          : [];
+      },
       register(spec, Component) {
-        if (spec.name === 'settings.section') {
+        registeredSlots.push(spec.key ? `${spec.name}:${spec.key}` : `${spec.name}:${spec.id}`);
+        if (spec.name === 'plugins.bundle.config' && spec.key === 'dsh-shortcutter') {
           Preferences = Component;
-          return () => { preferencesRoot?.unmount(); Preferences = undefined; };
+          return () => { preferencesRoot?.unmount(); preferencesRoot = undefined; Preferences = undefined; };
         }
         if (spec.name === 'shell.overlay') {
           const root = window.createRoot(document.getElementById('overlay'));
@@ -189,15 +225,12 @@ export function setup({ instrument = false, openState = 'open', nodes = 2000, au
     document.addEventListener(type, () => window.fixedInput?.({ type: 'reset' }), true);
   }
   window.fixture = {
-    session, terminal, sidebarRight, panelInfo, availablePanels, layout: ctx.layout, emitKey, native, catalog, shortcutConfig, workspace, commands,
+    session, terminal, sidebarRight, panelInfo, availablePanels, layout: ctx.layout, emitKey, native, catalog, shortcutConfig, workspace, commands, registeredSlots, pluginNavigation,
     commitSession(id, openState = 'loading') {
       selectedSession = id; session.set({ openState, running: false }); selectPanel(null);
     },
     preferences() {
-      const dialog = document.createElement('dialog'); dialog.id = 'preferences'; dialog.dataset.shortcutModal = 'settings';
-      const mount = document.createElement('div'); dialog.append(mount);
-      document.body.append(dialog); preferencesRoot = window.createRoot(mount);
-      preferencesRoot.render(window.React.createElement(Preferences)); dialog.showModal();
+      pluginNavigation.openBundle('dsh-shortcutter');
     },
     navigate(context = {}, id = 'magic-shortcuts.navigate') { const result = commands.get(id).resolve(context); result.run?.(); return result.status; },
     invalidateTarget() { occurrence = {}; navigationRevision++; },

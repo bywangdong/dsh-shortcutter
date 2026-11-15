@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "Shortcutter",
+    "description": "左手单键切换区域与工具标签；支持中文输入法直接按键。",
+    "detail": "docs/DETAIL.zh.md"
+  }
+}

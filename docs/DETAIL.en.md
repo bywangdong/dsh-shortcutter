@@ -1,0 +1,3 @@
+- **Enter content**: Press `i` or click directly into an input, terminal, or web page.
+- **Return to Shortcut Mode**: Press `Esc` on standard surfaces, or `⌥ Esc` inside terminals and web pages.
+- **Hints & jumps**: Press `?` to toggle key hints, or `g` for global page jumps.

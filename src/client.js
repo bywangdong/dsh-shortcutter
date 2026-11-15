@@ -30,7 +30,7 @@ window.__ModuleLoader__.load({
 
     function apply(ctx) {
       let anchor, scopeAnchor, root, layer, alive = true, revision = 0, serial = 0, pending, pendingTimer;
-      let navigationObserver, navigationScope = null, manualNavigation = false, handledEscape = false;
+      let navigationObserver, navigationScope = null, manualNavigation = false, handledEscape = false, altGraph = false;
       let navigating = false, hints = false, prefix = "", area = "conversation", target;
       let entryHint = false, hintDelayTimer, hintTimer, hintDeadline = 0, hintRemaining = 0, hoverPoint;
       let prefixShown = false, prefixToken = 0, prefixShowTimer, prefixExpireTimer;
@@ -223,7 +223,7 @@ window.__ModuleLoader__.load({
         pending = { id: ++serial, session: mounted(), toolTarget, origin: document.activeElement };
         // A timeout only abandons the request. It never takes focus or retries.
         pendingTimer = setTimeout(() => {
-          if (pending) { cancelPending(); tell("内容仍在准备中，可按返回导航快捷键继续。"); }
+          if (pending) { cancelPending(); tell("内容仍在准备中，可按回到快捷模式快捷键继续。"); }
         }, 5000);
         publish();
       };
@@ -291,7 +291,7 @@ window.__ModuleLoader__.load({
           if (!binding) throw new Error("当前还没有可输入的对话。");
           ctx.conversation.input.for(binding.ctx).focus();
         } else {
-          if (area === "sidebar") throw new Error("左侧栏请点击内容进入，按 Esc 返回导航。");
+          if (area === "sidebar") throw new Error("左侧栏请点击内容进入，按 Esc 回到快捷模式。");
           const captured = currentTarget();
           if (!captured || !ctx.sidebarRight.isTargetCurrent(captured)) throw new Error("当前面板已变化，请重新选择。");
           // DSH has no public focus facade for these two components. This narrow
@@ -306,7 +306,7 @@ window.__ModuleLoader__.load({
             element = [...document.querySelectorAll(selector)].find(inPane);
             if (element) break;
           }
-          if (!element) throw new Error("这个区域请点击内容进入；返回导航快捷键仍然可用。");
+          if (!element) throw new Error("这个区域请点击内容进入；回到快捷模式快捷键仍然可用。");
           element.focus({ preventScroll: true });
         }
         manualNavigation = false;
@@ -331,6 +331,17 @@ window.__ModuleLoader__.load({
         catch { throw new Error(panelId === "plugins" ? "插件页面当前不可用。" : "定时任务页面当前不可用。"); }
         area = "conversation"; target = undefined;
         requestNavigation(undefined, true);
+      };
+      const openPluginSettings = () => {
+        cancelPending();
+        const nav = ctx.get?.("pluginNavigation");
+        if (typeof nav?.openBundle === "function") {
+          nav.openBundle("dsh-shortcutter");
+          area = "conversation"; target = undefined;
+          requestNavigation(undefined, true);
+          return;
+        }
+        openGlobalPanel("plugins");
       };
       const revealSession = message => {
         const prev = activePanel();
@@ -426,6 +437,7 @@ window.__ModuleLoader__.load({
             rememberActiveTool();
             area = next.kind; target = ctx.sidebarRight.commandTarget(null); requestNavigation(target, true);
           } else if (id === "settings") openSettings();
+          else if (id === "pluginSettings") openPluginSettings();
           publish();
         } catch (error) {
           const text = error instanceof Error
@@ -505,7 +517,7 @@ window.__ModuleLoader__.load({
           style: { left: cue.left, top: cue.top, width: cue.width, height: Math.max(12, cue.inset + 5), "--sc-cue-inset": `${cue.inset}px` } });
       }
 
-      function Preferences() {
+      function Preferences(props) {
         React.useSyncExternalStore(subscribe, () => revision);
         React.useSyncExternalStore(fn => ctx.shortcuts.catalog.subscribe(fn), () => ctx.shortcuts.catalog.getSnapshot());
         const [draft, setDraft] = React.useState(() => structuredClone(config));
@@ -529,6 +541,7 @@ window.__ModuleLoader__.load({
           return () => { live = false; preferencesLive.current = false; stop(); stopRecording = () => {}; };
         }, []);
         React.useEffect(() => { if (recording) capture.current?.focus(); }, [recording]);
+        if (props?.view === "summary") return null;
         const start = async () => {
           const token = ++recordingToken.current;
           setNativeMessage(""); setCandidate(undefined);
@@ -544,7 +557,7 @@ window.__ModuleLoader__.load({
             const described = ctx.shortcuts.describeBinding(binding);
             const conflicts = described.conflicts.filter(other => other !== RETURN_ID);
             if (described.issue || conflicts.length) {
-              setNativeMessage(conflicts.length ? "这个组合已被 DSH 占用，请换一个。" : "这个组合不能作为返回导航快捷键。");
+              setNativeMessage(conflicts.length ? "这个组合已被 DSH 占用，请换一个。" : "这个组合不能用于回到快捷模式。");
               return;
             }
             return described;
@@ -553,11 +566,11 @@ window.__ModuleLoader__.load({
         const record = event => {
           if (!recording) return;
           event.preventDefault(); event.stopPropagation();
-          if (event.isComposing || event.nativeEvent?.isComposing || /^(Meta|Control|Shift|Alt)$/.test(event.key)) return;
-          if (event.key === "Escape" && !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey) {
+          if (event.isComposing || event.nativeEvent?.isComposing || /^(Meta|Control|Shift|Alt)$/.test(event.key) || /^(Meta|Control|Shift|Alt)/.test(event.code)) return;
+          if ((event.key === "Escape" || event.code === "Escape") && !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey) {
             stopRecording(); setNativeMessage("已取消录制"); return;
           }
-          if (!event.metaKey && !event.ctrlKey && !event.altKey) { setNativeMessage("返回导航需要带 ⌘、Ctrl 或 Option，避免占用内容中的单键。"); return; }
+          if (!event.metaKey && !event.ctrlKey && !event.altKey) { setNativeMessage("请搭配 ⌘、Ctrl 或 Option，避免占用日常打字单键。"); return; }
           const modifiers = [];
           if (event.metaKey) modifiers.push("primary");
           if (event.ctrlKey) modifiers.push("control");
@@ -603,35 +616,42 @@ window.__ModuleLoader__.load({
         const state = !row ? "未注册" : !row.binding ? "" : row.conflicts?.length ? "与其他快捷键冲突，未启用" : row.issue ? "不可用" : "";
         const matchedPreset = row?.binding && RETURN_PRESETS.find(preset => sameBinding(row.binding, preset.binding))?.key;
         const commandEscape = row?.binding?.code === "Escape" && row.binding.modifiers?.length === 1 && ["meta", "primary"].includes(row.binding.modifiers[0]);
-        return h("section", { className: "sc-preferences", "aria-labelledby": "sc-preferences-title" },
-          h("h2", { id: "sc-preferences-title" }, "Shortcutter"),
+        const groups = ["区域", "操作", "跳转"];
+        return h("section", { className: "sc-preferences", "aria-label": "Shortcutter 设置" },
           h("div", { className: "sc-settings-body" },
             h("section", { className: "sc-preference-section" },
-              h("h3", null, "返回导航"),
-              h("p", null, `左侧栏、对话、全局页面和设置输入框中按 Esc 返回导航；终端、网页使用下面的组合键（默认 ⌥ Esc，可一键切换为 ⌃ Esc 或自定义）。${config.bindings.enter ? `按 ${config.bindings.enter}` : "点击"}进入内容。`),
-              h("p", { className: "sc-muted" }, "弹窗、菜单和输入法优先处理 Esc。对话生成中按 Esc 同样返回导航，不再触发双 Esc 停止输出（停止生成请点击输入框旁的停止按钮）。"),
+              h("h3", null, "回到快捷模式"),
+              h("p", null, "对话、侧栏与页面内按 Esc；终端与网页使用下方组合键。"),
               h("div", { className: "sc-native-row" },
                 h("span", { className: "sc-native-key", "data-sc-return": RETURN_ID }, row?.binding ? row.keys.join(" ") : "未绑定"),
                 RETURN_PRESETS.map(preset => h("button", { type: "button", key: preset.key, "aria-pressed": !recording && !candidate && matchedPreset === preset.key, onClick: () => selectPreset(preset), disabled: busy || !row }, preset.label)),
                 h("button", { type: "button", "aria-pressed": recording || !!candidate || (!!row?.binding && !matchedPreset), onClick: start, disabled: busy || recording || !row }, "自定义…"),
                 state && h("span", { className: "sc-muted" }, state)),
               commandEscape && h("p", { className: "sc-muted", "data-sc-system-note": "" },
-                "⌘ Esc 无响应时，通常是 macOS 的“游戏叠层”先占用了它：打开 系统设置 → 键盘 → 键盘快捷键… → 调度中心，取消勾选“游戏叠层”，或直接切换回 ⌥ Esc / ⌃ Esc。"),
-              recording && h("input", { ref: capture, className: "sc-capture", readOnly: true, value: "", placeholder: "按下新的组合键 · Esc 取消", "aria-label": "录制返回导航快捷键", onKeyDown: record }),
+                "⌘ Esc 若被 macOS“游戏叠层”拦截，可在系统设置 → 键盘快捷键 → 调度中心里取消勾选“游戏叠层”，或改用 ⌥ Esc / ⌃ Esc。"),
+              recording && h("input", { ref: capture, className: "sc-capture", readOnly: true, value: "", placeholder: "按下组合键 · Esc 取消", "aria-label": "录制回到快捷模式快捷键", onKeyDown: record }),
               candidate && h("div", { className: "sc-native-row" },
                 h("span", null, "新组合：", candidate.keys.join(" ")),
                 h("button", { type: "button", disabled: busy, onClick: () => candidate && applyNative({ type: "set", id: RETURN_ID, binding: candidate.binding }) }, "保存组合"),
                 h("button", { type: "button", disabled: busy, onClick: () => { setCandidate(undefined); setNativeMessage(""); } }, "取消")),
               h("p", { className: "sc-status", role: "status" }, nativeMessage)),
             h("section", { className: "sc-preference-section" },
-              h("h3", null, "导航习惯"),
-              h("label", { className: "sc-check" }, h("input", { type: "checkbox", checked: draft.autoNavigate, onChange: e => setDraft({ ...draft, autoNavigate: e.target.checked }) }), h("span", null, "默认进入导航态；输入框有焦点时退出，失焦后自动恢复")),
-              h("p", null, "设置页也使用这个规则。终端、网页、菜单保留原操作。鼠标点击、输入框失焦和切回窗口时安静进入导航态，只显示面板左上角的小点。按返回导航组合键或 Esc 返回后，若稍作停顿，才显示约 2 秒的按键提示；紧接着按键则不显示。按 ? 可随时展开或收起完整提示；按 g 后停顿也会显示跳转选项，4 秒内未按第二个键自动取消。")),
+              h("h3", null, "触发方式"),
+              h("label", { className: "sc-check" },
+                h("input", { type: "checkbox", checked: draft.autoNavigate, onChange: e => setDraft({ ...draft, autoNavigate: e.target.checked }) }),
+                h("span", null, "默认开启快捷模式（点击输入框打字时自动退出，失焦后恢复）"))),
             h("section", { className: "sc-preference-section" },
-              h("div", { className: "sc-section-heading" }, h("h3", null, "导航键位"), h("button", { type: "button", onClick: () => setDraft({ ...draft, bindings: defaultConfig().bindings }) }, "恢复默认键位")),
-              h("p", null, "单键区分大小写。b / t 打开浏览器 / 终端：已有时回到最近使用的标签，没有时新建，重复按不会切换。B / T（Shift + b / t）始终新建。[ / ] 按标签栏顺序切换标签；w 关闭当前工具标签，在设置、插件或定时任务页也会关闭当前页面。打开、切换或新建后保持导航态，按 i 或点击内容进入输入。组合键依次按下，例如 g p、g a、g b、g s。留空可取消绑定。"),
-              h("div", { className: "sc-binding-list" }, COMMANDS.map(command => h("label", { className: "sc-binding-row", key: command.id }, h("span", null, command.label), h("input", { "aria-label": command.label, value: draft.bindings[command.id], placeholder: "未绑定", maxLength: 16, spellCheck: false, autoCapitalize: "off", autoComplete: "off", onChange: e => setDraft({ ...draft, bindings: { ...draft.bindings, [command.id]: e.target.value } }) })))),
-              h("p", { className: "sc-muted" }, "g · 跳转，? · 提示，Esc · 返回一层。这三个入口固定保留。Space 保持原有操作。"))),
+              h("div", { className: "sc-section-heading" },
+                h("div", null,
+                  h("h3", null, "快捷按键"),
+                  h("p", null, "区分大小写（b 复用、B 新建）；g 与 ? 固定保留，留空取消绑定。")),
+                h("button", { type: "button", onClick: () => setDraft({ ...draft, bindings: defaultConfig().bindings }) }, "恢复默认键位")),
+              h("div", { className: "sc-binding-groups" }, groups.map(group => h("div", { className: "sc-binding-group", key: group },
+                h("div", { className: "sc-group-title" }, group),
+                h("div", { className: "sc-binding-grid" }, COMMANDS.filter(c => c.group === group).map(command => h("label", { className: "sc-binding-row", key: command.id },
+                  h("span", null, command.label),
+                  h("input", { "aria-label": command.label, value: draft.bindings[command.id], placeholder: "未绑定", maxLength: 16, spellCheck: false, autoCapitalize: "off", autoComplete: "off", onChange: e => setDraft({ ...draft, bindings: { ...draft.bindings, [command.id]: e.target.value } }) }))))
+              ))))),
           h("footer", { className: "sc-preferences-footer" }, h("p", { role: "status", className: "sc-status" }, message), h("button", { type: "button", className: "sc-primary", onClick: save, disabled: !!recording || busy }, "保存设置")));
       }
 
@@ -695,23 +715,23 @@ window.__ModuleLoader__.load({
         const overlay = h("div", { className: "sc-root", style: { WebkitAppRegion: "initial" }, ref: el => { layer = el; } },
           navigationScope && h("div", { className: "sc-anchor", tabIndex: -1, "aria-hidden": true, ref: el => { scopeAnchor = el; } }),
           h(FocusCue),
-          navigating && (hints || (prefix && prefixShown) || entryHint) && h("section", { className: "sc-panel", "aria-label": "导航快捷键",
+          navigating && (hints || (prefix && prefixShown) || entryHint) && h("section", { className: "sc-panel", "aria-label": "快捷模式提示",
             onPointerMove: hoverMove, onFocusCapture: pauseHint,
             onPointerLeave: event => { hoverPoint = undefined; if (!event.currentTarget.contains(document.activeElement)) resumeHint(); },
             onBlurCapture: event => { if (!event.currentTarget.contains(event.relatedTarget) && !event.currentTarget.matches(":hover")) resumeHint(); } },
-            h("header", { className: "sc-panel-header" }, h("span", { className: "sc-panel-title" }, h("span", { className: "sc-dot", "aria-hidden": true }), prefix === "g" ? "跳转" : "导航"), h("span", { className: "sc-muted" }, surfaceLabel()),
-              h("button", { type: "button", className: "sc-icon-button", "aria-label": "打开 DSH 设置", title: "打开 DSH 设置", onPointerDown: keepFocus, onClick: () => run("settings") }, "⚙")),
+            h("header", { className: "sc-panel-header" }, h("span", { className: "sc-panel-title" }, h("span", { className: "sc-dot", "aria-hidden": true }), prefix === "g" ? "跳转" : "快捷"), h("span", { className: "sc-muted" }, surfaceLabel()),
+              h("button", { type: "button", className: "sc-icon-button", "aria-label": "Shortcutter 设置", title: "Shortcutter 设置", onPointerDown: keepFocus, onClick: () => run("pluginSettings") }, "⚙")),
             h("div", { className: "sc-grid" }, items.map(c => h("button", { type: "button", className: "sc-key-row", key: c.id, "data-sc-command": c.id, onPointerDown: keepFocus, onClick: () => run(c.id) }, h("span", { className: "sc-keys" }, keyCaps(prefix ? config.bindings[c.id].split(" ")[1] : config.bindings[c.id])), h("span", null, c.id === "closeTab" ? (navigationScope ? "关闭设置" : activePanel() ? "关闭当前页面" : "关闭当前工具标签") : c.label)))),
             !prefix && h("div", { className: "sc-prefix-row" }, [ ["g", "跳转"] ].map(([key, label]) => h("button", { type: "button", key, onPointerDown: keepFocus, onClick: () => { clearHint(); enterPrefix(key, true); hints = false; focusScopeAnchor(navigationScope).focus({ preventScroll: true }); publish(); } }, h("span", { className: "sc-keys" }, keyCaps(key)), label, h("span", { className: "sc-chevron", "aria-hidden": true }, "›")))),
-            h("footer", { className: "sc-panel-footer" }, h("span", null, prefix ? "依次按键" : navigationScope ? "设置内 Esc 返回或关闭" : area === "sidebar" ? "侧栏内 Esc 返回" : area === "conversation" ? (activePanel() ? "页内 Esc 返回" : "对话内 Esc 返回") : `${returnLabel()} 返回导航`), h("span", null, "esc ", prefix ? "返回" : "收起"))));
+            h("footer", { className: "sc-panel-footer" }, h("span", null, prefix ? "依次按键" : navigationScope ? "设置内 Esc 回到快捷模式或关闭" : area === "sidebar" ? "侧栏内 Esc 回到快捷模式" : area === "conversation" ? (activePanel() ? "页内 Esc 回到快捷模式" : "对话内 Esc 回到快捷模式") : `${returnLabel()} 回到快捷模式`), h("span", null, "esc ", prefix ? "返回" : "收起"))));
         return h("div", { className: "sc-root", ref: el => { root = el; }, "data-sc-navigation": navigating ? "true" : "false", "data-sc-area": surfaceArea(), "data-sc-prefix": prefix },
-          h("div", { id: "sc-navigation-anchor", ref: el => { anchor = el; }, className: "sc-anchor", tabIndex: -1, role: "group", "aria-label": `导航模式，问号显示快捷键，${config.bindings.enter || "点击"}进入内容` }),
+          h("div", { id: "sc-navigation-anchor", ref: el => { anchor = el; }, className: "sc-anchor", tabIndex: -1, role: "group", "aria-label": `快捷模式，按 ? 显示快捷键，${config.bindings.enter || "点击"}进入内容` }),
           // shell.overlay is below fullscreen tools (20 vs 40). Keep our anchor
           // in that slot for layout ownership, but paint our pointer-transparent
           // cues and on-demand help outside its stacking context. Settings still
           // need their own modal top layer.
           createPortal(overlay, navigationScope || document.body),
-          !navigating && !available && h("button", { type: "button", className: "sc-peek", onClick: () => take(undefined, true, null, true) }, "进入导航"),
+          !navigating && !available && h("button", { type: "button", className: "sc-peek", onClick: () => take(undefined, true, null, true) }, "回到快捷模式"),
           notice && h("div", { role: "status", className: "sc-notice" }, notice));
       }
 
@@ -720,12 +740,12 @@ window.__ModuleLoader__.load({
         return () => style.remove();
       }, "shortcutter.style");
       ctx.effect(() => ctx.slots.inject("shell.overlay", () => ctx.slots.register({ name: "shell.overlay", id: "shortcutter", order: 999 }, Panel)), "shortcutter.overlay");
-      ctx.effect(() => ctx.slots.inject("settings.section", () => ctx.slots.register({
-        name: "settings.section", id: "shortcutter", order: 80, label: "Shortcutter"
+      ctx.effect(() => ctx.slots.inject("plugins.bundle.config", () => ctx.slots.register({
+        name: "plugins.bundle.config", key: "dsh-shortcutter"
       }, Preferences)), "shortcutter.settings");
       ctx.effect(() => {
         const command = {
-          id: RETURN_ID, label: () => "Shortcutter · 返回导航", aliases: [],
+          id: RETURN_ID, label: () => "Shortcutter · 回到快捷模式", aliases: [],
           defaults: { "desktop:macos": DEFAULT_RETURN_BINDING },
           regions: ["page", "editable", "terminal"], modals: ["settings"],
           resolve: input => {
@@ -763,12 +783,17 @@ window.__ModuleLoader__.load({
           firstNavigation = false;
           if (pending) cancelPending();
         }
-        if (g.composing || g.defaultPrevented || g.repeat || g.control || g.meta || g.alt) return;
+        // macOS Chinese IMEs report keyCode 229 (or leave host composition guards
+        // set) on non-input surfaces while preserving physical event.code. Yield
+        // to IME composition only inside actual editable/embedded targets.
+        if (g.defaultPrevented || g.repeat || g.control || g.meta || g.alt || altGraph) return;
+        const inEditableOrContent = isNavigationInput(c.target) || isNavigationContent(c.target);
+        if (inEditableOrContent && g.composing) return;
         if (g.code === "Escape") {
           if (!g.shift) handleEscape(c.target, { prevent: () => input.consume(), stop: () => {} });
           return;
         }
-        if (!navigating && (isNavigationInput(c.target) || isNavigationContent(c.target))) return;
+        if (!navigating && inEditableOrContent) return;
         const context = navigationObserver?.refresh() || navigationContext();
         if (["menu", "modal", "inactive", "composition"].includes(context.reason)) return;
         if (!context.navigating || c.target !== document.activeElement || nativeNavigationKey(c.target, g.code)) return;
@@ -784,17 +809,22 @@ window.__ModuleLoader__.load({
         publish();
       }), "shortcutter.local-keys");
       ctx.effect(() => {
+        let mountedSession;
         const changed = () => {
           const id = mounted();
           if (!id && activePanel()) {
+            mountedSession = undefined;
             if (!seenSession) { seenSession = true; area = "conversation"; target = undefined; requestNavigation(); }
             return;
           }
-          if (seenSession && id === lastSession) return;
-          seenSession = true;
-          if (lastSession && id !== lastSession) previousSession = lastSession;
-          lastSession = id; area = "conversation"; target = undefined;
-          requestNavigation();
+          if (seenSession && id === mountedSession) return;
+          seenSession = true; mountedSession = id;
+          if (lastSession && id && id !== lastSession) previousSession = lastSession;
+          if (id) lastSession = id;
+          if (!pending?.toolTarget || pending.session !== id) {
+            area = "conversation"; target = undefined;
+            requestNavigation();
+          }
         };
         const off = ctx.sidebarRight.mounted.subscribe(changed); changed();
         return off;
@@ -889,9 +919,10 @@ window.__ModuleLoader__.load({
         // Runs on body bubble: after React/Lexical local popups (#root), before
         // SettingsRoot's document Escape close and DSH's window stop-shortcut.
         const bodyEscape = event => {
-          if (event.key !== "Escape" || event.defaultPrevented || event.isComposing || event.keyCode === 229
-            || event.repeat || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
+          if ((event.key !== "Escape" && event.code !== "Escape") || event.defaultPrevented
+            || event.repeat || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey || altGraph) return;
           const targetEl = event.composedPath?.().find(node => node instanceof Element) || event.target;
+          if ((isNavigationInput(targetEl) || isNavigationContent(targetEl)) && (event.isComposing || event.keyCode === 229)) return;
           if (hintDelayTimer !== undefined) clearHint();
           if (targetEl !== anchor && !own(targetEl)) {
             firstNavigation = false;
@@ -903,17 +934,24 @@ window.__ModuleLoader__.load({
           }
         };
         const modalEscape = event => {
-          if (event.key !== "Escape" || (event.target !== document && event.target !== document.documentElement)) return;
+          if ((event.key !== "Escape" && event.code !== "Escape") || (event.target !== document && event.target !== document.documentElement)) return;
           const context = navigationObserver.refresh();
           if (!context.scope || !context.navigating || (!prefix && !hints && !entryHint)
-            || event.defaultPrevented || event.isComposing || event.repeat || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
+            || event.defaultPrevented || event.repeat || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey || altGraph) return;
           event.preventDefault(); event.stopPropagation();
           inputReset++; prefix = ""; hints = false; clearHint(); clearPrefixTimers(); publish();
+        };
+        const trackModifier = event => { altGraph = !!event.getModifierState?.("AltGraph"); };
+        const guardCompositionReset = event => {
+          if (own(event.target) || (event.type === "compositionend" && navigating)) {
+            queueMicrotask(() => { if (alive) inputReset++; });
+          }
         };
         // The initial activation retains the existing one-shot handoff. Later
         // activation only observes the focused control; it never moves focus.
         const activate = () => { if (firstNavigation) requestNavigation(); else navigationObserver.refresh(); };
         const blur = () => {
+          altGraph = false;
           cancelPending(); prefix = ""; hints = false; clearHint(); navigating = false; publish();
         };
         const storage = event => {
@@ -924,6 +962,10 @@ window.__ModuleLoader__.load({
           else storageError = loaded.error;
           prefix = ""; hints = false; clearHint(); cancelPending(); navigationObserver.refresh(); publish();
         };
+        document.addEventListener("keydown", trackModifier, true);
+        document.addEventListener("keyup", trackModifier, true);
+        document.addEventListener("compositionstart", guardCompositionReset, true);
+        document.addEventListener("compositionend", guardCompositionReset, true);
         document.body.addEventListener("keydown", bodyEscape);
         document.addEventListener("keydown", modalEscape, true);
         document.addEventListener("pointerdown", pointer, true);
@@ -951,6 +993,10 @@ window.__ModuleLoader__.load({
         window.addEventListener("storage", storage);
         return () => {
           alive = false; stopRecording(); stopHeaderNavigation(); navigationObserver.dispose();
+          document.removeEventListener("keydown", trackModifier, true);
+          document.removeEventListener("keyup", trackModifier, true);
+          document.removeEventListener("compositionstart", guardCompositionReset, true);
+          document.removeEventListener("compositionend", guardCompositionReset, true);
           document.body.removeEventListener("keydown", bodyEscape);
           document.removeEventListener("keydown", modalEscape, true); document.removeEventListener("pointerdown", pointer, true);
           window.removeEventListener("focus", activate); window.removeEventListener("blur", blur); window.removeEventListener("storage", storage);

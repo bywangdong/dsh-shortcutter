@@ -311,7 +311,7 @@ export async function pluginChecks(createPage) {
   const bindingOf = page => page.evaluate(id => window.fixture.catalog.getSnapshot().find(row => row.id === id).binding, PRIMARY);
   const recordReturn = async (page, combo) => {
     await page.getByRole('button', { name: '自定义…', exact: true }).click();
-    await page.getByLabel('录制返回导航快捷键').press(combo); await settle(page);
+    await page.getByLabel('录制回到快捷模式快捷键').press(combo); await settle(page);
   };
   const nativeStatus = page => page.locator('.sc-preference-section .sc-status').first().innerText();
   await check('⌥ Esc is the single default return shortcut, with one-click ⌃ Esc switch and no primary/alternate split', async page => {
@@ -358,14 +358,14 @@ export async function pluginChecks(createPage) {
     assert.deepEqual(await bindingOf(page), { code: 'Escape', modifiers: ['meta', 'shift'] });
     assert.equal(await page.locator('[data-sc-system-note]').count(), 0, 'Guidance is specific to plain ⌘ Esc');
     await recordReturn(page, 'Escape');
-    assert.equal(await page.getByLabel('录制返回导航快捷键').count(), 0);
+    assert.equal(await page.getByLabel('录制回到快捷模式快捷键').count(), 0);
     assert.equal(await page.evaluate(() => window.fixture.native.recording), false);
     assert.equal(await page.evaluate(() => window.fixture.native.edits.length), 2);
   });
   await check('Shift semicolon recording uses its physical code even when key is colon', async page => {
     await page.evaluate(() => window.fixture.preferences());
     await page.getByRole('button', { name: '自定义…', exact: true }).click();
-    await page.getByLabel('录制返回导航快捷键').dispatchEvent('keydown', { key: ':', code: 'Semicolon', metaKey: true, shiftKey: true });
+    await page.getByLabel('录制回到快捷模式快捷键').dispatchEvent('keydown', { key: ':', code: 'Semicolon', metaKey: true, shiftKey: true });
     await page.getByRole('button', { name: '保存组合', exact: true }).click(); await settle(page);
     assert.deepEqual(await bindingOf(page), { code: 'Semicolon', modifiers: ['meta', 'shift'] });
   });
@@ -378,7 +378,7 @@ export async function pluginChecks(createPage) {
     await recordReturn(page, 'Meta+KeyK');
     assert.match(await nativeStatus(page), /已被 DSH 占用/);
     assert.equal(await page.getByRole('button', { name: '保存组合', exact: true }).count(), 0);
-    await page.getByLabel('录制返回导航快捷键').press('Escape'); await settle(page);
+    await page.getByLabel('录制回到快捷模式快捷键').press('Escape'); await settle(page);
     assert.equal(await page.evaluate(() => window.fixture.native.edits.length), 0);
     await page.evaluate(() => { window.fixture.native.conflicts = ['magic-shortcuts.navigate']; });
     for (const result of ['conflict', 'stale', 'failed', 'throw']) {
@@ -566,7 +566,7 @@ export async function pluginChecks(createPage) {
     await ready(page);
     await page.evaluate(() => window.fixture.preferences());
     await page.getByRole('button', { name: '⌃ Esc', exact: true }).click(); await settle(page);
-    await page.evaluate(() => document.getElementById('preferences').close()); await ready(page);
+    await page.evaluate(() => window.fixture.layout.selectPanel(null)); await ready(page);
     await freezeClock(page);
     await page.locator('#composer').focus(); await advance(page, 50);
     assert.equal(await page.evaluate(() => window.fixture.navigate()), 'handled');
@@ -777,14 +777,15 @@ export async function pluginChecks(createPage) {
     await key(page, 'KeyC'); await ready(page);
     assert.equal(await page.evaluate(() => window.fixture.panelInfo.getSnapshot().activePanelId), null);
   });
-  await check('w closes Settings without touching background tools, and g b preserves session history across global pages', async page => {
+  await check('w closes DSH Settings without touching background tools, and g b preserves session history across global pages', async page => {
     await ready(page);
-    await page.evaluate(() => window.fixture.preferences()); await settle(page);
-    assert.equal(await page.evaluate(() => document.getElementById('preferences').open), true);
+    await key(page, 'KeyG'); await key(page, 'KeyS'); await settle(page);
+    assert.equal(await page.evaluate(() => document.getElementById('host-settings')?.open), true);
+    assert.equal(await page.locator('#host-settings .sc-preferences').count(), 0, 'DSH Settings no longer mounts Shortcutter section');
     await key(page, 'Slash', { shift: true }); await settle(page);
     assert.match(await page.locator('[data-sc-command="closeTab"]').innerText(), /关闭设置/);
     await key(page, 'KeyW'); await ready(page);
-    assert.equal(await page.evaluate(() => document.getElementById('preferences').open), false);
+    assert.equal(await page.evaluate(() => document.getElementById('host-settings')?.open), false);
     assert.equal(await page.evaluate(() => window.fixture.sidebarRight.openTabs.getSnapshot().length), 1);
 
     await page.evaluate(() => { window.fixture.commitSession('s2', 'open'); }); await ready(page);
@@ -797,6 +798,29 @@ export async function pluginChecks(createPage) {
     await key(page, 'KeyG'); await key(page, 'KeyB'); await ready(page);
     assert.equal(await page.evaluate(() => window.fixture.panelInfo.getSnapshot().activePanelId), null);
     assert.equal(await page.evaluate(() => window.fixture.sidebarRight.mounted.getSnapshot()), 's2');
+  });
+  await check('Shortcutter settings live in Plugins bundle config, open from panel gear, and support Esc/w navigation', async page => {
+    await ready(page);
+    const slots = await page.evaluate(() => window.fixture.registeredSlots);
+    assert.equal(slots.includes('plugins.bundle.config:dsh-shortcutter'), true);
+    assert.equal(slots.some(s => s.startsWith('settings.section')), false);
+
+    await key(page, 'Slash', { shift: true }); await settle(page);
+    assert.equal(await page.locator('.sc-panel-title').innerText(), '快捷');
+    assert.equal(await page.locator('.sc-panel .sc-icon-button').getAttribute('aria-label'), 'Shortcutter 设置');
+    await page.locator('.sc-panel .sc-icon-button').click(); await ready(page); await settle(page);
+    assert.deepEqual(await page.evaluate(() => window.fixture.pluginNavigation.openedBundles), ['dsh-shortcutter']);
+    assert.equal(await page.evaluate(() => window.fixture.panelInfo.getSnapshot().activePanelId), 'plugins');
+    assert.equal(await page.locator('[data-plugin-detail="dsh-shortcutter"] .sc-preferences').count(), 1);
+    assert.equal(await page.locator('.sc-preferences h2').count(), 0, 'No redundant h2 inside bundle config');
+    assert.equal(await page.locator('.sc-binding-group').count(), 3);
+
+    await page.getByLabel('切换侧栏').focus(); await settle(page);
+    assert.equal(await page.evaluate(() => window.pluginState().navigating), false);
+    await page.keyboard.press('Escape'); await ready(page);
+    assert.equal(await page.evaluate(() => window.fixture.panelInfo.getSnapshot().activePanelId), 'plugins');
+    await key(page, 'KeyW'); await ready(page);
+    assert.equal(await page.evaluate(() => window.fixture.panelInfo.getSnapshot().activePanelId), null);
   });
   await check('tool keys from global pages return to the session workbench in one step and keep layout when unavailable', async page => {
     await ready(page);
@@ -822,6 +846,91 @@ export async function pluginChecks(createPage) {
     await key(page, 'KeyB'); await settle(page);
     assert.equal(await page.evaluate(() => window.fixture.panelInfo.getSnapshot().activePanelId), 'plugins');
     assert.equal(await page.locator('.sc-notice').textContent(), '先打开一个会话，再打开工具面板。');
+  });
+  await check('Chinese IME composing/229 keys work in navigation mode while still protecting IME composition in inputs', async page => {
+    await ready(page);
+    // Simulate host compositionend reset hook like DSH installKeyboard.
+    await page.evaluate(() => {
+      for (const type of ['compositionstart', 'compositionend']) {
+        document.addEventListener(type, () => window.fixedInput?.({ type: 'reset' }), true);
+      }
+    });
+
+    // 1. Single keys, Shift uppercase, punctuation (?, [, ]) and g sequences all work when host reports composing: true (keyCode 229 / WeType / SCIM).
+    assert.equal(await key(page, 'KeyB', { shift: true, composing: true }), true); await ready(page);
+    const createdId = await page.evaluate(() => window.fixture.sidebarRight.active().id);
+    assert.notEqual(createdId, 'b1');
+    assert.equal(await key(page, 'BracketLeft', { composing: true }), true); await ready(page);
+    assert.equal(await page.evaluate(() => window.fixture.sidebarRight.active().id), 'b1');
+    assert.equal(await key(page, 'BracketRight', { composing: true }), true); await ready(page);
+    assert.equal(await page.evaluate(() => window.fixture.sidebarRight.active().id), createdId);
+
+    // Passive default navigation (focus on ordinary button rather than anchor) also works with composing: true.
+    await page.locator('#ordinary').focus(); await settle(page);
+    assert.equal(await page.evaluate(() => window.pluginState().navigating), true);
+    assert.equal(await key(page, 'Slash', { shift: true, composing: true }), true); await settle(page);
+    assert.equal(await page.locator('.sc-panel').count(), 1);
+
+    // Escape in navigation mode cancels help even if IME reports key='Process', keyCode=229 or composing=true.
+    await page.evaluate(() => {
+      document.getElementById('ordinary').dispatchEvent(new KeyboardEvent('keydown', { key: 'Process', code: 'Escape', keyCode: 229, bubbles: true, cancelable: true }));
+    }); await settle(page);
+    assert.equal(await page.locator('.sc-panel').count(), 0);
+
+    // Spurious compositionstart/compositionend on the navigation anchor or delayed compositionend must not wipe g prefix.
+    await page.locator('#sc-navigation-anchor').focus(); await settle(page);
+    assert.equal(await key(page, 'KeyG', { composing: true }), true);
+    await page.evaluate(() => {
+      const anchor = document.getElementById('sc-navigation-anchor');
+      anchor.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+      anchor.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true }));
+      document.getElementById('composer').dispatchEvent(new CompositionEvent('compositionend', { bubbles: true }));
+    }); await settle(page);
+    assert.equal(await page.evaluate(() => window.pluginState().prefix), 'g');
+    assert.equal(await key(page, 'KeyP', { composing: true }), true); await ready(page);
+    assert.equal(await page.evaluate(() => window.fixture.panelInfo.getSnapshot().activePanelId), 'plugins');
+    assert.equal(await key(page, 'KeyC', { composing: true }), true); await ready(page);
+    assert.equal(await page.evaluate(() => window.fixture.panelInfo.getSnapshot().activePanelId), null);
+
+    // 2. Inside #composer, active Chinese IME composition still owns keys and the 1st Escape; 2nd Escape returns to navigation.
+    await page.locator('#composer').focus(); await settle(page);
+    await page.evaluate(() => {
+      document.getElementById('composer').dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+    }); await settle(page);
+    assert.equal(await key(page, 'KeyB', { composing: true }), false);
+    assert.equal(await key(page, 'Escape', { composing: true }), false);
+    await page.evaluate(() => {
+      document.getElementById('composer').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 229, isComposing: true, bubbles: true, cancelable: true }));
+    }); await settle(page);
+    assert.equal(await page.evaluate(() => document.activeElement.id), 'composer', '1st Escape during IME composition stays in composer');
+    assert.equal(await page.evaluate(() => window.pluginState().navigating), false);
+
+    // IME finishes cancelling preedit; 2nd Escape returns to navigation, even if host fixedInput still had stale composing: true.
+    await page.evaluate(() => {
+      document.getElementById('composer').dispatchEvent(new CompositionEvent('compositionend', { bubbles: true }));
+    }); await settle(page);
+    await page.keyboard.press('Escape'); await ready(page);
+    assert.equal(await page.evaluate(() => window.pluginState().navigating), true);
+    assert.equal(await key(page, 'KeyS', { composing: true }), true); await settle(page);
+    assert.equal(await page.evaluate(() => document.getElementById('frame').hasAttribute('data-sidebar-collapsed')), true);
+
+    // 3. AltGraph modifier remains ignored even when g.alt is false and g.composing is true.
+    await page.evaluate(() => {
+      const ev = new KeyboardEvent('keydown', { key: 'ß', code: 'KeyS', bubbles: true, modifierAltGraph: true });
+      document.dispatchEvent(ev);
+    });
+    assert.equal(await key(page, 'KeyS', { composing: true }), false);
+    await page.evaluate(() => document.dispatchEvent(new KeyboardEvent('keyup', { key: 'AltGraph', code: 'AltRight', bubbles: true })));
+    assert.equal(await key(page, 'KeyS', { composing: true }), true); await settle(page);
+    assert.equal(await page.evaluate(() => document.getElementById('frame').hasAttribute('data-sidebar-collapsed')), false);
+
+    // 4. Settings binding inputs accept Chinese full-width brackets under Chinese IME.
+    await page.evaluate(() => window.fixture.preferences()); await settle(page);
+    await page.getByLabel('上一个工具标签').fill('【');
+    await page.getByLabel('下一个工具标签').fill('】');
+    await page.getByRole('button', { name: '保存设置', exact: true }).click(); await settle(page);
+    assert.equal(await page.getByLabel('上一个工具标签').inputValue(), '[');
+    assert.equal(await page.getByLabel('下一个工具标签').inputValue(), ']');
   });
   return { passed: results.filter(result => result.pass).length, total: results.length, results };
 }

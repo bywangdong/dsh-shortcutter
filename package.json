@@ -1,17 +1,21 @@
 {
   "name": "dsh-shortcutter",
-  "version": "0.1.37",
+  "version": "0.1.38",
   "private": true,
-  "description": "DSH Shortcutter — 键盘导航、which-key 提示和可自定义快捷键",
+  "description": "DSH Shortcutter — 快捷模式、which-key 提示与可自定义单键快捷键",
   "type": "module",
   "main": "./lib/index.js",
   "exports": {
     ".": "./lib/index.js",
     "./client": "./lib/client.js",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./locale/*.json": "./locale/*.json"
   },
   "files": [
     "lib",
+    "locale/*.json",
+    "docs",
     "cordis.patch.yml",
     "README.md"
   ],
@@ -37,7 +41,8 @@
         "@deepseek-ai/dsh-client-ui-conversation",
         "@deepseek-ai/dsh-client-ui-workspace",
         "@deepseek-ai/dsh-api-terminal-controller",
-        "@deepseek-ai/dsh-client-ui-settings-general"
+        "@deepseek-ai/dsh-client-ui-settings-general",
+        "@deepseek-ai/dsh-client-ui-plugin-manager"
       ]
     }
   },

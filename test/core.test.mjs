@@ -234,3 +234,18 @@ test('v1–v3 migration preserves custom g p, g a, g b and explicit unbinding wi
     assert.match(r3.notice,/g b 已有自定义用途/);
   }
 });
+test('Chinese IME full-width punctuation normalizes cleanly in binding configuration',()=>{
+  const c=defaultConfig();
+  c.bindings.previousTab='【';
+  c.bindings.nextTab='】';
+  c.bindings.files='g 「';
+  c.bindings.previous='g ？';
+  const r=validateConfig(c);
+  assert.ok(r.config);
+  assert.equal(r.config.bindings.previousTab,'[');
+  assert.equal(r.config.bindings.nextTab,']');
+  assert.equal(r.config.bindings.files,'g [');
+  assert.equal(r.config.bindings.previous,'g ?');
+  const reserved=defaultConfig();reserved.bindings.files='？';
+  assert.match(validateConfig(reserved).error,/保留/);
+});

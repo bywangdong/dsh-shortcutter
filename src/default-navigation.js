@@ -49,7 +49,11 @@ export function observeNavigationContext(doc, { read, changed, ignore = () => fa
     // An input can disappear or lose focus without delivering compositionend
     // (including an app switch). Do not strand the next page in composition.
     if (composing && (doc.hidden || !doc.hasFocus() || !compositionTarget?.isConnected
-      || !compositionTarget.contains(doc.activeElement))) composing = false;
+      || (compositionTarget !== doc.activeElement
+        && (!isNavigationInput(compositionTarget) || !compositionTarget.contains(doc.activeElement))))) {
+      composing = false;
+      compositionTarget = undefined;
+    }
     const next = read({ composing });
     if (!previous || ['navigating', 'reason', 'active', 'scope'].some(key => next[key] !== previous[key])) {
       previous = next; changed(next);
@@ -57,10 +61,15 @@ export function observeNavigationContext(doc, { read, changed, ignore = () => fa
     return next;
   };
   const schedule = () => { win.clearTimeout(timer); timer = win.setTimeout(refresh, 0); };
-  const start = event => { composing = true; compositionTarget = event.target; refresh(); };
+  const start = event => { if (ignore(event.target)) return; composing = true; compositionTarget = event.target; refresh(); };
   const end = () => { composing = false; compositionTarget = undefined; schedule(); };
+  const keydown = event => {
+    if (composing && !event.isComposing && event.keyCode !== 229) {
+      composing = false; compositionTarget = undefined; refresh();
+    }
+  };
   const events = [['focusin', refresh], ['focusout', schedule], ['pointerup', schedule], ['click', schedule],
-    ['visibilitychange', refresh], ['compositionstart', start], ['compositionend', end]];
+    ['visibilitychange', refresh], ['compositionstart', start], ['compositionend', end], ['keydown', keydown]];
   for (const [type, handler] of events) doc.addEventListener(type, handler, true);
   win.addEventListener('focus', refresh); win.addEventListener('blur', refresh);
   const overlays = 'dialog, [role="menu"], [role="listbox"], [role="dialog"], [role="alertdialog"]';

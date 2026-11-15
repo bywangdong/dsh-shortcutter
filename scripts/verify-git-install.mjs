@@ -85,7 +85,7 @@ try {
     const installed = join(directory, 'node_modules', manifest.name);
     const installedManifest = JSON.parse(readFileSync(join(installed, 'package.json'), 'utf8'));
     assert.equal(installedManifest.version, manifest.version);
-    for (const entry of ['lib/index.js', 'lib/client.js', 'cordis.patch.yml']) {
+    for (const entry of ['lib/index.js', 'lib/client.js', 'cordis.patch.yml', 'locale/zh.json', 'locale/en.json', 'docs/DETAIL.zh.md', 'docs/DETAIL.en.md']) {
       assert.deepEqual(readFileSync(join(installed, entry)), readFileSync(join(source, entry)), `${entry} differs from a clean build`);
     }
     assert.equal(existsSync(join(installed, 'src')), false, 'Install payload must not include development sources');

@@ -25,8 +25,10 @@ export const COMMANDS = [
 export function defaultConfig() {
   return { version: 4, autoNavigate: true, bindings: Object.fromEntries(COMMANDS.map(c => [c.id, c.key])) };
 }
+const FULLWIDTH_KEYS = { "？": "?", "【": "[", "】": "]", "「": "[", "」": "]" };
 export function normalizeSequence(value) {
-  return String(value).trim().split(/\s+/).map(k => k.toLowerCase() === "space" ? "Space" : k).join(" ");
+  return String(value).replace(/[？【】「」]/g, ch => FULLWIDTH_KEYS[ch])
+    .trim().split(/\s+/).map(k => k.toLowerCase() === "space" ? "Space" : k).join(" ");
 }
 export function validateConfig(value) {
   if (!value || ![1, 2, 3, 4].includes(value.version) || typeof value.autoNavigate !== "boolean" || !value.bindings || typeof value.bindings !== "object" || Array.isArray(value.bindings)) return { error: "设置格式不受支持，已保留原始数据。" };
@@ -40,9 +42,9 @@ export function validateConfig(value) {
     if (canBackfill) { missing.push(command); continue; }
     if (typeof binding !== "string") return { error: `${command.label}缺少键位。` };
     const key = normalizeSequence(binding);
-    if (["g", "?"].includes(key)) return { error: "g 和 ? 保留给导航菜单。" };
+    if (["g", "?"].includes(key)) return { error: "g 和 ? 保留给快捷提示菜单。" };
     const supported = value.version === 2 ? /^(?:[a-zA-Z0-9]|g [a-zA-Z0-9?])$/ : /^(?:[a-zA-Z0-9\[\]]|g [a-zA-Z0-9?\[\]])$/;
-    if (key && !supported.test(key)) return { error: `${command.label}：请使用单个字母、数字、[、]，或 g 加一个键。Space 已不再用作导航前缀。` };
+    if (key && !supported.test(key)) return { error: `${command.label}：请使用单个字母、数字、[、]，或 g 加一个键。Space 已不再用作前缀。` };
     if (key && used.has(key)) return { error: `${key} 同时分配给了「${used.get(key)}」和「${command.label}」。` };
     if (key) used.set(key, command.label);
     config.bindings[command.id] = key;

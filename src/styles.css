@@ -83,7 +83,7 @@ body[data-ds-dark-theme] .sc-root .sc-focus-cue {
 .sc-dialog .sc-primary { background: var(--sc-fg); color: var(--sc-bg); border-color: transparent; padding: 7px 14px; flex-shrink: 0; }
 .sc-dialog .sc-primary:hover { opacity: .88; }
 .sc-help-row { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 10px 0; border-bottom: 1px solid var(--sc-line); }
-/* Native DSH settings content only; the host owns the sidebar, scroll and close. */
+/* Plugin page configuration section; the host owns page header, scroll and back navigation. */
 .sc-preferences {
   --sc-fg: var(--dsw-alias-label-primary, light-dark(#292c34, #e7e8ed));
   --sc-muted: var(--dsw-alias-label-secondary, light-dark(#757a86, #999eaa));
@@ -91,26 +91,36 @@ body[data-ds-dark-theme] .sc-root .sc-focus-cue {
   --sc-key: var(--dsw-alias-bg-layer-1, light-dark(#f0f1f4, #30333a));
   --sc-accent: var(--dsw-alias-brand-primary-new-colorprimary-new-color, light-dark(#5e6cc0, #a4aff8));
   --sc-hover: var(--dsw-alias-interactive-bg-hover, light-dark(#636b7c0b, #c4ccff0a));
-  color: var(--sc-fg); font: 14px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: var(--sc-fg); font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 .sc-preferences *, .sc-preferences *::before, .sc-preferences *::after { box-sizing: border-box; }
-.sc-preferences h2 { font-size: 18px; font-weight: 500; line-height: 26px; margin: 0 0 24px; }
-.sc-preferences h3 { font-size: 14px; font-weight: 500; margin: 0 0 7px; }
-.sc-preferences p { color: var(--sc-muted); font-size: 13px; line-height: 1.7; margin: 5px 0 12px; }
+.sc-preferences h3 { font-size: 14px; font-weight: 500; line-height: 20px; margin: 0; }
+.sc-preferences p { color: var(--sc-muted); font-size: 12px; line-height: 1.6; margin: 4px 0 0; }
 .sc-preferences .sc-settings-body { padding: 0; overflow: visible; }
+.sc-preferences .sc-preference-section + .sc-preference-section { border-top: 1px solid var(--sc-line); margin-top: 18px; padding-top: 18px; }
 .sc-preferences button, .sc-preferences input { color: inherit; font: inherit; }
-.sc-preferences button { cursor: pointer; padding: 5px 12px; border: 1px solid var(--sc-line); border-radius: var(--dsw-radius-md, 7px); background: transparent; font-size: 13px; white-space: nowrap; }
+.sc-preferences button { cursor: pointer; padding: 5px 12px; border: 1px solid var(--sc-line); border-radius: var(--dsw-radius-md, 7px); background: transparent; font-size: 12px; white-space: nowrap; }
 .sc-preferences button:hover { background: var(--sc-hover); }
 .sc-preferences button:disabled { cursor: default; opacity: .48; }
-.sc-preferences .sc-native-row { margin: 12px 0 6px; }
+.sc-preferences .sc-native-row { margin-top: 10px; }
 .sc-preferences .sc-native-row button[aria-pressed="true"] { border-color: var(--sc-accent); color: var(--sc-accent); background: var(--sc-hover); font-weight: 500; }
 .sc-preferences button:focus-visible, .sc-preferences input:focus-visible { outline: 2px solid var(--sc-accent); outline-offset: 2px; }
-.sc-preferences .sc-binding-row input { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
-.sc-preferences .sc-binding-row:last-child { border-bottom: 0; }
-.sc-preferences-footer { padding-top: 16px; margin-top: 20px; border-top: 1px solid var(--sc-line); display: flex; align-items: center; justify-content: flex-end; gap: 14px; }
+.sc-preferences .sc-check { display: flex; align-items: center; gap: 8px; margin: 8px 0 0; cursor: pointer; font-size: 13px; }
+.sc-preferences .sc-check input { margin: 0; accent-color: var(--sc-accent); }
+.sc-preferences .sc-section-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.sc-binding-groups { display: flex; flex-direction: column; gap: 14px; }
+.sc-group-title { color: var(--sc-muted); font-size: 11px; font-weight: 500; letter-spacing: .04em; margin-bottom: 2px; }
+.sc-binding-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 24px; }
+.sc-preferences .sc-binding-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 0; border-bottom: 0.5px solid var(--sc-line); min-width: 0; }
+.sc-preferences .sc-binding-row > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sc-preferences .sc-binding-row input { width: 76px; flex-shrink: 0; text-align: center; padding: 4px 6px; background: var(--sc-key); border: 1px solid transparent; border-radius: 6px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.sc-preferences .sc-binding-row input:hover { border-color: var(--sc-line); }
+.sc-preferences .sc-preference-section > .sc-status { margin-top: 8px; }
+.sc-preferences-footer { padding-top: 14px; margin-top: 18px; border-top: 1px solid var(--sc-line); display: flex; align-items: center; justify-content: flex-end; gap: 12px; }
 .sc-preferences-footer .sc-status { flex: 1; margin: 0; }
-.sc-preferences .sc-primary { background: var(--sc-accent); border-color: transparent; color: #fff; padding: 7px 14px; }
+.sc-preferences .sc-primary { background: var(--sc-accent); border-color: transparent; color: #fff; padding: 6px 14px; font-size: 13px; }
 .sc-preferences .sc-primary:hover { background: var(--sc-accent); filter: brightness(.95); }
 @keyframes sc-appear { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: translateY(0); } }
 @media (prefers-reduced-motion: reduce) { .sc-panel, .sc-focus-cue::before { animation: none; } }
+@media (max-width: 560px) { .sc-binding-grid { grid-template-columns: 1fr; } }
 @media (max-width: 480px) { .sc-dialog { width: calc(100vw - 20px); max-height: calc(100vh - 24px); } .sc-dialog-header, .sc-settings-body, .sc-dialog-footer { padding-left: 16px; padding-right: 16px; } }
