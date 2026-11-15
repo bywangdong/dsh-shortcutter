@@ -29,6 +29,14 @@ export function setup({ instrument = false, openState = 'open', nodes = 2000, au
       set: next => { value = next; for (const fn of [...listeners]) fn(); }, listenerCount: () => listeners.size };
   }
   const session = store({ openState, running: false });
+  const sessionList = store({ phase: 'ready', ids: ['s1', 's2', 's3'], byId: {
+    s1: { id: 's1', displayTitle: '当前会话', blank: false, updatedAt: 1 },
+    s2: { id: 's2', displayTitle: '中文输入法修复', blank: false, updatedAt: 3 },
+    s3: { id: 's3', displayTitle: 'Browser keyboard navigation', blank: false, updatedAt: 2 }
+  } });
+  const workspaceList = store({ phase: 'ready', state: 'idle', archivedSessionIds: [], items: [
+    { workspaceId: 'project', title: 'Shortcutter', path: '/project', sessionIds: ['s1', 's2'] }
+  ] });
   const terminal = store({ writable: false, phase: 'opening' });
   const mounted = store('s1');
   const panelInfo = store({ activePanelId: null });
@@ -69,7 +77,10 @@ export function setup({ instrument = false, openState = 'open', nodes = 2000, au
       return el;
     }));
     const pane = host.querySelector('[data-dockkit-pane]'); pane.dataset.sidebarRightTab = currentId ?? '';
-    pane.innerHTML = !active() ? '' : active().kind === 'terminal' ? '<div class="xterm"></div>' : '<form><input id="address" value="draft"><span id="toolbar-blank">toolbar</span></form>';
+    pane.innerHTML = !active() ? '' : active().kind === 'terminal' ? '<div class="xterm"></div>'
+      : active().kind === 'files' ? '<div id="files-view">files</div>'
+      : '<form id="browser-form"><input id="address" value="draft"><span id="toolbar-blank">toolbar</span></form>';
+    pane.querySelector('#browser-form')?.addEventListener('submit', e => e.preventDefault());
   };
   const renderPresentation = () => {
     const shown = expanded && !!mounted.getSnapshot();
@@ -201,7 +212,7 @@ export function setup({ instrument = false, openState = 'open', nodes = 2000, au
       register(command) { commands.set(command.id, command); return () => commands.delete(command.id); },
       observeFixedInput(fn) { window.fixedInput = fn; return () => { window.fixedInput = undefined; }; },
       recording(value) { native.recording = value; return Promise.resolve(); } },
-    sidebarRight, sessions: { binding: id => id ? { session, ctx: {} } : undefined },
+    sidebarRight, sessions: { list: sessionList, binding: id => id ? { session, ctx: {} } : undefined }, workspaces: { list: workspaceList },
     conversation: { input: { for: () => ({ focus: () => document.getElementById('composer').focus() }) } },
     layout: { panelInfo, selectPanel, toggleSidebar() { document.getElementById('frame').toggleAttribute('data-sidebar-collapsed'); } },
     uiWorkspace: workspace, webTerminals: { view: () => ({ state: terminal }) }
@@ -225,7 +236,7 @@ export function setup({ instrument = false, openState = 'open', nodes = 2000, au
     document.addEventListener(type, () => window.fixedInput?.({ type: 'reset' }), true);
   }
   window.fixture = {
-    session, terminal, sidebarRight, panelInfo, availablePanels, layout: ctx.layout, emitKey, native, catalog, shortcutConfig, workspace, commands, registeredSlots, pluginNavigation,
+    session, sessionList, workspaceList, terminal, sidebarRight, panelInfo, availablePanels, layout: ctx.layout, emitKey, native, catalog, shortcutConfig, workspace, commands, registeredSlots, pluginNavigation,
     commitSession(id, openState = 'loading') {
       selectedSession = id; session.set({ openState, running: false }); selectPanel(null);
     },

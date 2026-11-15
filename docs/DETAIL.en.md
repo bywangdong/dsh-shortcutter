@@ -1,3 +1,4 @@
-- **Enter content**: Press `i` or click directly into an input, terminal, or web page.
-- **Return to Shortcut Mode**: Press `Esc` on standard surfaces, or `⌥ Esc` inside terminals and web pages.
-- **Hints & jumps**: Press `?` to toggle key hints, or `g` for global page jumps.
+- **Toggle & create**: Press `b` / `t` / `e` to toggle Browser, Terminal, or Files; `n c` / `n b` / `n t` to create and focus input immediately; `i` to enter content.
+- **Return to Shortcut Mode**: Press `Esc` on standard surfaces and the address bar, or `⌥ Esc` inside terminals and web pages.
+- **Tabs & jumps**: Press `Tab` / `⇧ Tab` to cycle tabs, `g` for live tab numbers (`1`–`9`) and global jumps, or `?` to toggle key hints.
+- **Session search**: Press `f` in Shortcut Mode to search session titles or workspace names. Use `↑` / `↓` to select, `Enter` to open, or `Esc` to return. Recent visits appear first; archived and subagent sessions are excluded.

@@ -6,64 +6,92 @@ export const COMMANDS = [
   { id: "sidebar", label: "切换侧栏", key: "s", group: "区域" },
   { id: "conversation", label: "回到对话", key: "c", group: "区域" },
   { id: "right", label: "切换工具面板", key: "r", group: "区域" },
-  { id: "files", label: "文件", key: "e", group: "区域" },
-  { id: "browser", label: "打开浏览器", key: "b", group: "区域" },
-  { id: "terminal", label: "打开终端", key: "t", group: "区域" },
+  { id: "files", label: "切换文件", key: "e", group: "区域" },
+  { id: "browser", label: "切换浏览器", key: "b", group: "区域" },
+  { id: "terminal", label: "切换终端", key: "t", group: "区域" },
   { id: "enter", label: "进入当前内容", key: "i", group: "操作" },
-  { id: "newSession", label: "新建会话", key: "n", group: "操作" },
-  { id: "newBrowser", label: "新建浏览器", key: "B", group: "操作" },
-  { id: "newTerminal", label: "新建终端", key: "T", group: "操作" },
+  { id: "searchSessions", label: "搜索会话", key: "f", group: "操作" },
+  { id: "newSession", label: "新建会话", key: "n c", group: "操作" },
+  { id: "newBrowser", label: "新建浏览器", key: "n b", group: "操作" },
+  { id: "newTerminal", label: "新建终端", key: "n t", group: "操作" },
   { id: "closeTab", label: "关闭当前标签 / 页面", key: "w", group: "操作" },
   { id: "fullscreen", label: "放大 / 恢复面板", key: "R", group: "操作" },
   { id: "previous", label: "上一个会话", key: "g b", group: "跳转" },
-  { id: "nextTab", label: "下一个工具标签", key: "]", group: "跳转" },
-  { id: "previousTab", label: "上一个工具标签", key: "[", group: "跳转" },
-  { id: "plugins", label: "打开插件", key: "g p", group: "跳转" },
+  { id: "nextTab", label: "下一个工具标签", key: "Tab", group: "跳转" },
+  { id: "previousTab", label: "上一个工具标签", key: "Shift+Tab", group: "跳转" },
+  { id: "plugins", label: "打开插件", key: "g e", group: "跳转" },
   { id: "schedules", label: "打开定时任务", key: "g a", group: "跳转" },
   { id: "settings", label: "打开 DSH 设置", key: "g s", group: "跳转" }
 ];
 export function defaultConfig() {
-  return { version: 4, autoNavigate: true, bindings: Object.fromEntries(COMMANDS.map(c => [c.id, c.key])) };
+  return { version: 6, autoNavigate: true, bindings: Object.fromEntries(COMMANDS.map(c => [c.id, c.key])) };
 }
 const FULLWIDTH_KEYS = { "？": "?", "【": "[", "】": "]", "「": "[", "」": "]" };
 export function normalizeSequence(value) {
   return String(value).replace(/[？【】「」]/g, ch => FULLWIDTH_KEYS[ch])
-    .trim().split(/\s+/).map(k => k.toLowerCase() === "space" ? "Space" : k).join(" ");
+    .replace(/⇧\s*tab|shift\s*\+\s*tab/gi, "Shift+Tab")
+    .trim().split(/\s+/).map(k => {
+      const lower = k.toLowerCase();
+      return lower === "space" ? "Space" : lower === "tab" ? "Tab" : lower === "shift+tab" ? "Shift+Tab" : k;
+    }).join(" ");
 }
 export function validateConfig(value) {
-  if (!value || ![1, 2, 3, 4].includes(value.version) || typeof value.autoNavigate !== "boolean" || !value.bindings || typeof value.bindings !== "object" || Array.isArray(value.bindings)) return { error: "设置格式不受支持，已保留原始数据。" };
+  if (!value || ![1, 2, 3, 4, 5, 6].includes(value.version) || typeof value.autoNavigate !== "boolean" || !value.bindings || typeof value.bindings !== "object" || Array.isArray(value.bindings)) return { error: "设置格式不受支持，已保留原始数据。" };
   if (value.version === 1) return migrateLegacyConfig(value);
   const config = defaultConfig(), used = new Map(), notes = [], missing = [];
   config.autoNavigate = value.autoNavigate;
+  const reserved = value.version < 5 ? ["g", "?"] : ["g", "n", "?"];
+  const supported = value.version === 2 ? /^(?:[a-zA-Z0-9]|g [a-zA-Z0-9?])$/
+    : value.version < 5 ? /^(?:[a-zA-Z0-9\[\]]|g [a-zA-Z0-9?\[\]])$/
+    : /^(?:[a-zA-Z0-9\[\]]|Tab|Shift\+Tab|(?:g|n) (?:[a-zA-Z0-9?\[\]]|Tab|Shift\+Tab))$/;
   for (const command of COMMANDS) {
     const binding = value.bindings[command.id];
     const canBackfill = binding === undefined && ((value.version === 2 && command.id === "closeTab")
-      || (value.version < 4 && ["plugins", "schedules"].includes(command.id)));
+      || (value.version < 4 && ["plugins", "schedules"].includes(command.id))
+      || (value.version < 6 && command.id === "searchSessions"));
     if (canBackfill) { missing.push(command); continue; }
     if (typeof binding !== "string") return { error: `${command.label}缺少键位。` };
     const key = normalizeSequence(binding);
-    if (["g", "?"].includes(key)) return { error: "g 和 ? 保留给快捷提示菜单。" };
-    const supported = value.version === 2 ? /^(?:[a-zA-Z0-9]|g [a-zA-Z0-9?])$/ : /^(?:[a-zA-Z0-9\[\]]|g [a-zA-Z0-9?\[\]])$/;
-    if (key && !supported.test(key)) return { error: `${command.label}：请使用单个字母、数字、[、]，或 g 加一个键。Space 已不再用作前缀。` };
+    if (reserved.includes(key)) return { error: "g、n 和 ? 保留给快捷提示菜单。" };
+    if (key && !supported.test(key)) return { error: `${command.label}：请使用单个字母、数字、Tab、Shift+Tab，或 g / n 加一个键。Space 已不再用作前缀。` };
     if (key && used.has(key)) return { error: `${key} 同时分配给了「${used.get(key)}」和「${command.label}」。` };
     if (key) used.set(key, command.label);
     config.bindings[command.id] = key;
   }
-  // Only old defaults move. A v4 user can still deliberately assign g t / g T / g a,
+  const moveDefault = (id, from, to, label) => {
+    if (config.bindings[id] !== from) return;
+    used.delete(from);
+    if (used.has(to)) {
+      config.bindings[id] = "";
+      notes.push(`${to} 已有自定义用途，「${label}」暂未绑定`);
+    } else {
+      config.bindings[id] = to;
+      used.set(to, label);
+    }
+  };
+  // Only old defaults move. A v5 user can still deliberately assign [ / ] / B / T / g p,
   // and custom bindings or explicit unbinding always survive an upgrade.
   if (value.version === 2) {
-    if (config.bindings.nextTab === "g t") { used.delete("g t"); config.bindings.nextTab = "]"; used.set("]", "下一个工具标签"); }
-    if (config.bindings.previousTab === "g T") { used.delete("g T"); config.bindings.previousTab = "["; used.set("[", "上一个工具标签"); }
+    moveDefault("nextTab", "g t", "]", "下一个工具标签");
+    moveDefault("previousTab", "g T", "[", "上一个工具标签");
   }
-  if (value.version < 4 && config.bindings.previous === "g a") {
-    used.delete("g a");
-    if (used.has("g b")) {
-      config.bindings.previous = "";
-      notes.push("g b 已有自定义用途，「上一个会话」暂未绑定");
-    } else {
-      config.bindings.previous = "g b";
-      used.set("g b", "上一个会话");
+  if (value.version < 4) {
+    moveDefault("previous", "g a", "g b", "上一个会话");
+  }
+  if (value.version < 5) {
+    for (const c of COMMANDS) {
+      if (c.id !== "newSession" && config.bindings[c.id] === "n") {
+        used.delete("n");
+        config.bindings[c.id] = "";
+        notes.push(`「${c.label}」原 n 已改为新建前缀，可重新设置`);
+      }
     }
+    moveDefault("newSession", "n", "n c", "新建会话");
+    moveDefault("newBrowser", "B", "n b", "新建浏览器");
+    moveDefault("newTerminal", "T", "n t", "新建终端");
+    moveDefault("nextTab", "]", "Tab", "下一个工具标签");
+    moveDefault("previousTab", "[", "Shift+Tab", "上一个工具标签");
+    moveDefault("plugins", "g p", "g e", "打开插件");
   }
   for (const command of missing) {
     if (used.has(command.key)) {
@@ -77,7 +105,7 @@ export function validateConfig(value) {
   return { config, ...(notes.length ? { notice: notes.join("；") } : {}) };
 }
 function migrateLegacyConfig(value) {
-  const legacy = COMMANDS.filter(c => !["newBrowser", "newTerminal", "closeTab", "plugins", "schedules"].includes(c.id)).concat([
+  const legacy = COMMANDS.filter(c => !["newBrowser", "newTerminal", "closeTab", "plugins", "schedules", "searchSessions"].includes(c.id)).concat([
     { id: "autoNav", label: "切换自动导航" }, { id: "help", label: "快捷键总览" }
   ]);
   const bindings = {}, used = new Set(), notes = [];
@@ -119,6 +147,7 @@ export function readConfig(raw) {
 export function tokenFromGesture(g) {
   if (g.code === "Escape") return "Escape";
   if (g.code === "Space") return "Space";
+  if (g.code === "Tab") return g.shift ? "Shift+Tab" : "Tab";
   if (g.code === "Slash" && g.shift) return "?";
   if (g.code === "BracketLeft" && !g.shift) return "[";
   if (g.code === "BracketRight" && !g.shift) return "]";
@@ -131,9 +160,10 @@ export function resolveSequence(bindings, prefix, key) {
   if (!key) return { consume: false, prefix };
   if (prefix) {
     const command = COMMANDS.find(c => bindings[c.id] === `${prefix} ${key}`)?.id;
+    if (!command && prefix === "g" && /^[1-9]$/.test(key)) return { consume: true, prefix: "", tabIndex: Number(key) - 1 };
     return { consume: true, prefix: "", command };
   }
-  if (key === "g") return { consume: true, prefix: key };
+  if (key === "g" || key === "n") return { consume: true, prefix: key };
   if (key === "?") return { consume: true, prefix: "", toggleHints: true };
   const command = COMMANDS.find(c => bindings[c.id] === key)?.id;
   return { consume: !!command, prefix: "", command };

@@ -33,6 +33,127 @@ export async function pluginChecks(createPage) {
     catch (error) { results.push({ name, pass: false, error: String(error) }); }
     finally { await page.close(); }
   }
+  await check('f searches real session metadata without switching until Enter, then returns to Shortcut Mode', async page => {
+    await ready(page);
+    await key(page, 'KeyF'); await page.getByRole('combobox').waitFor();
+    assert.equal(await page.getByRole('dialog', { name: '搜索会话' }).count(), 1);
+    assert.equal(await page.getByRole('combobox').evaluate(el => el === document.activeElement), true);
+    for (const tab of ['Tab', 'Shift+Tab']) {
+      await page.keyboard.press(tab);
+      assert.equal(await page.getByRole('button', { name: '关闭搜索' }).evaluate(el => el === document.activeElement), true);
+      await page.keyboard.press(tab);
+      assert.equal(await page.getByRole('combobox').evaluate(el => el === document.activeElement), true);
+    }
+    assert.equal(await page.getByRole('option').count(), 3);
+    assert.deepEqual(await page.evaluate(() => window.fixture.workspace.openedSessions), []);
+    await page.getByRole('combobox').fill('中文');
+    assert.equal(await page.getByRole('option').count(), 1);
+    await page.keyboard.press('Enter'); await ready(page);
+    assert.deepEqual(await page.evaluate(() => window.fixture.workspace.openedSessions), ['s2']);
+    assert.equal(await page.getByRole('dialog').count(), 0);
+    assert.equal(await page.locator('#composer').inputValue(), 'draft');
+    assert.equal(await page.evaluate(() => window.fixture.sessionList.listenerCount()), 0);
+    assert.equal(await page.evaluate(() => window.fixture.workspaceList.listenerCount()), 0);
+  });
+  await check('session search supports arrows, clicks, empty results, and Esc restores the originating tool', async page => {
+    await ready(page); await key(page, 'KeyB'); await ready(page);
+    await key(page, 'KeyB'); await ready(page);
+    await key(page, 'KeyF'); await page.getByRole('combobox').waitFor();
+    await page.keyboard.press('ArrowDown');
+    assert.equal(await page.locator('[aria-selected="true"][role="option"]').getAttribute('id'), 'sc-session-result-s2');
+    await page.keyboard.press('ArrowUp');
+    assert.equal(await page.locator('[aria-selected="true"][role="option"]').getAttribute('id'), 'sc-session-result-s1');
+    await page.getByRole('combobox').fill('does not exist');
+    assert.equal(await page.getByRole('option').count(), 0);
+    await page.keyboard.press('Enter');
+    assert.equal(await page.getByRole('dialog').count(), 1);
+    await page.keyboard.press('Escape'); await ready(page);
+    assert.equal(await page.evaluate(() => window.pluginState().area), 'browser');
+    assert.deepEqual(await page.evaluate(() => window.fixture.workspace.openedSessions), []);
+    await key(page, 'KeyF'); await page.getByRole('combobox').fill('BROWSER');
+    await page.getByRole('option').click(); await ready(page);
+    assert.deepEqual(await page.evaluate(() => window.fixture.workspace.openedSessions), ['s3']);
+  });
+  await check('Chinese IME input and confirmation stay inside search, and ordinary typing never triggers f', async page => {
+    await ready(page); await page.locator('#composer').focus(); await settle(page);
+    assert.equal(await key(page, 'KeyF'), false);
+    assert.equal(await page.getByRole('dialog').count(), 0);
+    await page.keyboard.press('Escape'); await ready(page);
+    await key(page, 'KeyF', { composing: true });
+    await page.getByRole('combobox').fill('中文');
+    await page.getByRole('combobox').evaluate(input => {
+      input.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+      for (const key of ['Enter', 'Escape']) input.dispatchEvent(new KeyboardEvent('keydown', { key, code: key, bubbles: true, cancelable: true, isComposing: true, keyCode: 229 }));
+    });
+    assert.equal(await page.getByRole('dialog').count(), 1);
+    assert.deepEqual(await page.evaluate(() => window.fixture.workspace.openedSessions), []);
+    await page.getByRole('combobox').evaluate(input => input.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true })));
+    await page.keyboard.press('Enter'); await ready(page);
+    assert.deepEqual(await page.evaluate(() => window.fixture.workspace.openedSessions), ['s2']);
+  });
+  await check('live renames, archives and deletions update results while selection follows session identity', async page => {
+    await ready(page); await key(page, 'KeyF'); await page.getByRole('combobox').fill('Shortcutter');
+    await page.keyboard.press('ArrowDown');
+    await page.evaluate(() => {
+      const f = window.fixture, list = f.sessionList.getSnapshot();
+      f.sessionList.set({ ...list, byId: { ...list.byId, s2: { ...list.byId.s2, displayTitle: '<script>中文修复</script>', updatedAt: 100 } } });
+    });
+    await settle(page);
+    assert.equal(await page.locator('[aria-selected="true"][role="option"]').getAttribute('id'), 'sc-session-result-s2');
+    assert.ok((await page.getByRole('option').allTextContents()).some(text => text.includes('<script>')));
+    assert.equal(await page.locator('.sc-search-results script').count(), 0);
+    await page.evaluate(() => {
+      const f = window.fixture;
+      f.workspaceList.set({ ...f.workspaceList.getSnapshot(), archivedSessionIds: ['s2'] });
+    }); await settle(page);
+    assert.equal(await page.getByRole('option').count(), 1);
+    await page.evaluate(() => window.fixture.sessionList.set({ phase: 'ready', ids: [], byId: {} })); await settle(page);
+    await page.keyboard.press('Enter');
+    assert.deepEqual(await page.evaluate(() => window.fixture.workspace.openedSessions), []);
+    assert.equal(await page.getByRole('combobox').getAttribute('aria-activedescendant'), null);
+    await page.keyboard.press('Escape'); await ready(page);
+  });
+  await check('f opens from global pages and waits for the selected session even with automatic navigation disabled', async page => {
+    await ready(page);
+    await page.evaluate(() => {
+      const bindings = { sidebar: 's', conversation: 'c', right: 'r', files: 'e', browser: 'b', terminal: 't', enter: 'i',
+        newSession: 'n c', newBrowser: 'n b', newTerminal: 'n t', closeTab: 'w', fullscreen: 'R', previous: 'g b',
+        nextTab: 'Tab', previousTab: 'Shift+Tab', plugins: 'g e', schedules: 'g a', settings: 'g s' };
+      const value = JSON.stringify({ version: 5, autoNavigate: false, bindings });
+      localStorage.setItem('dsh.magic-shortcuts.v1', value);
+      window.dispatchEvent(new StorageEvent('storage', { key: 'dsh.magic-shortcuts.v1', newValue: value, storageArea: localStorage }));
+      window.fixture.navigate();
+    }); await ready(page);
+    await key(page, 'KeyG'); await key(page, 'KeyE'); await ready(page);
+    await key(page, 'KeyF'); await page.getByRole('combobox').fill('中文');
+    await page.evaluate(() => {
+      window.fixture.workspace.openSession = id => {
+        window.fixture.workspace.openedSessions.push(id);
+        setTimeout(() => window.fixture.commitSession(id, 'open'), 100);
+      };
+    });
+    await page.keyboard.press('Enter');
+    await ready(page);
+    assert.equal(await page.evaluate(() => window.fixture.sidebarRight.mounted.getSnapshot()), 's2');
+    assert.equal(await page.evaluate(() => window.fixture.panelInfo.getSnapshot().activePanelId), null);
+    assert.deepEqual(await page.evaluate(() => window.fixture.workspace.openedSessions), ['s2']);
+  });
+  await check('search waits for archive metadata, then supports backdrop dismissal and clean plugin disposal', async page => {
+    await ready(page);
+    await page.evaluate(() => window.fixture.workspaceList.set({ phase: 'pending', items: [], archivedSessionIds: [] }));
+    await key(page, 'KeyF'); await page.getByRole('combobox').waitFor();
+    assert.equal(await page.getByRole('option').count(), 0);
+    assert.match(await page.locator('.sc-search-status').textContent(), /正在加载/);
+    await page.evaluate(() => window.fixture.workspaceList.set({ phase: 'ready', items: [], archivedSessionIds: ['s2'] }));
+    await settle(page); assert.equal(await page.getByRole('option').count(), 2);
+    await page.mouse.click(5, 5); await ready(page);
+    assert.equal(await page.getByRole('dialog').count(), 0);
+    await key(page, 'KeyF'); await page.getByRole('combobox').waitFor();
+    await page.evaluate(() => window.fixture.dispose()); await settle(page);
+    assert.equal(await page.getByRole('dialog').count(), 0);
+    assert.equal(await page.evaluate(() => window.fixture.sessionList.listenerCount()), 0);
+    assert.equal(await page.evaluate(() => window.fixture.workspaceList.listenerCount()), 0);
+  });
   await check('initial ready session takes navigation once quietly and releases the session subscription', async page => {
     await ready(page);
     await page.waitForTimeout(600);
@@ -168,7 +289,7 @@ export async function pluginChecks(createPage) {
     await page.evaluate(() => { const el = document.getElementById('composer'); el.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true })); el.remove(); }); await settle(page);
     assert.equal(await page.evaluate(() => window.pluginState().navigating), true); assert.equal(await key(page, 'KeyG'), true);
   });
-  await check('b creates a browser when this session has none and returns from address autofocus to navigation', async page => {
+  await check('b creates a browser when this session has none, returns from address autofocus to navigation, and toggles on repeat', async page => {
     await ready(page);
     await page.evaluate(() => {
       const open = window.fixture.sidebarRight.openTab;
@@ -179,19 +300,34 @@ export async function pluginChecks(createPage) {
     assert.equal(current.kind, 'browser'); assert.notEqual(current.id, 'foreign-browser');
     assert.equal(await page.evaluate(() => window.fixture.sidebarRight.openTabs.getSnapshot().filter(t => t.sessionId === 's1').length), 1);
     await key(page, 'KeyB'); await ready(page);
+    assert.equal(await page.evaluate(() => window.fixture.sidebarRight.isExpanded()), false);
+    assert.equal(await page.evaluate(() => window.pluginState().area), 'conversation');
+    await key(page, 'KeyB'); await ready(page);
+    assert.equal(await page.evaluate(() => window.fixture.sidebarRight.isExpanded()), true);
     assert.equal(await page.evaluate(() => window.fixture.sidebarRight.active().id), current.id);
     assert.equal(await page.evaluate(() => window.fixture.sidebarRight.openTabs.getSnapshot().length), 2);
     assert.equal(await page.evaluate(() => window.pluginState().navigating), true);
     assert.equal(await page.locator('#address').inputValue(), 'draft');
   }, { initialTabs: [{ sessionId: 's2', tabId: 'foreign-browser', kind: 'browser' }], activeTabId: null });
-  await check('repeated b keeps the current browser, its content and all other tabs', async page => {
+  await check('b, t and e toggle collapse when already visible and switch directly when another kind is active', async page => {
     await ready(page);
     await page.evaluate(() => { window.originalAddress = document.getElementById('address'); window.originalAddress.value = 'keep this address'; });
-    for (let i = 0; i < 3; i++) { await key(page, 'KeyB'); await ready(page); }
+    // b1 is already visible: first b collapses, second b reopens b1 without losing content or other tabs.
+    await key(page, 'KeyB'); await ready(page);
+    assert.equal(await page.evaluate(() => window.fixture.sidebarRight.isExpanded()), false);
+    assert.equal(await page.evaluate(() => window.pluginState().area), 'conversation');
+    await key(page, 'KeyB'); await ready(page);
+    assert.equal(await page.evaluate(() => window.fixture.sidebarRight.isExpanded()), true);
     assert.equal(await page.evaluate(() => window.fixture.sidebarRight.active().id), 'b1');
     assert.equal(await page.evaluate(() => document.getElementById('address') === window.originalAddress), true);
     assert.equal(await page.locator('#address').inputValue(), 'keep this address');
-    assert.equal(await page.evaluate(() => window.fixture.sidebarRight.openTabs.getSnapshot().length), 2);
+    // Switching from browser to files keeps dock expanded; pressing e again collapses it.
+    await key(page, 'KeyE'); await ready(page);
+    assert.equal(await page.evaluate(() => window.fixture.sidebarRight.isExpanded()), true);
+    assert.equal(await page.evaluate(() => window.fixture.sidebarRight.active().kind), 'files');
+    await key(page, 'KeyE'); await ready(page);
+    assert.equal(await page.evaluate(() => window.fixture.sidebarRight.isExpanded()), false);
+    assert.equal(await page.evaluate(() => window.fixture.sidebarRight.openTabs.getSnapshot().length), 3);
   }, { initialTabs: [{ sessionId: 's1', tabId: 'b1', kind: 'browser' }, { sessionId: 's1', tabId: 'b2', kind: 'browser' }] });
   await check('b recalls the most recently selected browser from another tool and a collapsed panel', async page => {
     await ready(page);
@@ -206,22 +342,46 @@ export async function pluginChecks(createPage) {
     assert.equal(await page.evaluate(() => window.fixture.sidebarRight.isExpanded()), true);
     assert.equal(await page.evaluate(() => window.fixture.sidebarRight.openTabs.getSnapshot().length), 3);
   }, { initialTabs: [{ sessionId: 's1', tabId: 'b1', kind: 'browser' }, { sessionId: 's1', tabId: 'b2', kind: 'browser' }, { sessionId: 's1', tabId: 'f1', kind: 'files' }] });
-  await check('Shift+B always creates a separate browser while b reuses it in navigation', async page => {
+  await check('n b creates a separate browser, focuses and selects #address, and returns to navigation on valid URL submit', async page => {
     await ready(page);
     const ids = new Set(['b1']);
     for (let i = 0; i < 2; i++) {
-      await key(page, 'KeyB', { shift: true }); await ready(page);
+      assert.equal(await key(page, 'KeyN'), true);
+      assert.equal(await key(page, 'KeyB'), true);
+      await settle(page);
       const id = await page.evaluate(() => window.fixture.sidebarRight.active().id);
       assert.equal(ids.has(id), false); ids.add(id);
-      await key(page, 'KeyB'); await ready(page);
+      const focusState = await page.evaluate(() => {
+        const el = document.activeElement;
+        return { id: el?.id, start: el?.selectionStart, end: el?.selectionEnd, len: el?.value?.length };
+      });
+      assert.deepEqual(focusState, { id: 'address', start: 0, end: 5, len: 5 });
+      assert.equal(await page.evaluate(() => window.pluginState().navigating), false);
+      // Typing w inside #address never closes the tab.
+      assert.equal(await key(page, 'KeyW'), false);
+      // Invalid URL submit ([role="alert"] rendered) keeps focus in #address.
+      await page.evaluate(() => {
+        const alert = document.createElement('div'); alert.id = 'url-alert'; alert.setAttribute('role', 'alert'); alert.textContent = 'invalid';
+        document.querySelector('[data-dockkit-pane]').append(alert);
+        document.getElementById('browser-form').requestSubmit();
+      });
+      await settle(page);
+      assert.equal(await page.evaluate(() => document.activeElement.id), 'address');
+      assert.equal(await page.evaluate(() => window.pluginState().navigating), false);
+      // Valid URL submit removes alert and returns cleanly to browser Shortcut Mode.
+      await page.evaluate(() => {
+        document.getElementById('url-alert').remove();
+        document.getElementById('browser-form').requestSubmit();
+      });
+      await ready(page);
+      assert.equal(await page.evaluate(() => window.pluginState().area), 'browser');
       assert.equal(await page.evaluate(() => window.fixture.sidebarRight.active().id), id);
     }
     assert.equal(await page.evaluate(() => window.fixture.sidebarRight.openTabs.getSnapshot().length), 3);
   });
-  for (const shift of [false, true]) for (const autofocus of [false, true]) await check(`${shift ? 'Shift+T' : 'first t'} waits for the terminal view and keeps subsequent commands in navigation (autofocus=${autofocus})`, async page => {
-    await ready(page); await key(page, 'KeyT', { shift }); await settle(page);
+  for (const autofocus of [false, true]) await check(`first t waits for the terminal view and keeps subsequent commands in navigation (autofocus=${autofocus})`, async page => {
+    await ready(page); await key(page, 'KeyT'); await settle(page);
     assert.ok(await page.evaluate(() => window.pluginState().pending));
-    await key(page, 'KeyT'); await settle(page);
     assert.equal(await page.evaluate(() => window.fixture.sidebarRight.openTabs.getSnapshot().filter(t => t.kind === 'terminal').length), 1);
     await page.evaluate(() => window.fixture.terminal.set({ writable: true, phase: 'connected' })); await settle(page);
     assert.ok(await page.evaluate(() => window.pluginState().pending), 'Writable model alone must not complete');
@@ -235,8 +395,8 @@ export async function pluginChecks(createPage) {
     assert.equal(await key(page, 'Escape'), false);
     assert.equal(await page.evaluate(() => document.activeElement.id), 'terminal-input');
   });
-  for (const shift of [false, true]) await check(`${shift ? 'Shift+T' : 'first t'} followed by fullscreen still waits for delayed terminal autofocus`, async page => {
-    await ready(page); await key(page, 'KeyT', { shift }); await settle(page);
+  await check('first t followed by fullscreen still waits for delayed terminal autofocus', async page => {
+    await ready(page); await key(page, 'KeyT'); await settle(page);
     await key(page, 'KeyR', { shift: true }); await settle(page);
     await page.evaluate(() => window.fixture.terminal.set({ writable: true, phase: 'connected' })); await settle(page);
     assert.ok(await page.evaluate(() => window.pluginState().pending), 'Fullscreen must preserve the wait for the terminal view');
@@ -244,40 +404,89 @@ export async function pluginChecks(createPage) {
     assert.equal(await page.evaluate(() => document.getElementById('frame').hasAttribute('data-rightbar-fullscreen')), true);
     assert.equal(await page.evaluate(() => window.pluginState().navigating), true);
   });
-  await check('t retains the selected terminal and Shift+T creates another without entering input', async page => {
+  await check('n t creates a new terminal and focuses #terminal-input once writable, while t toggles without losing input', async page => {
     await ready(page);
     for (let i = 0; i < 2; i++) {
       const previous = await page.evaluate(() => window.fixture.sidebarRight.active().id);
-      await key(page, 'KeyT', { shift: true }); await settle(page);
-      await page.evaluate(() => { window.fixture.terminal.set({ writable: true, phase: 'connected' }); window.fixture.mountTerminal(true); }); await ready(page);
+      await page.evaluate(() => window.fixture.terminal.set({ writable: false, phase: 'opening' }));
+      await key(page, 'KeyN'); await key(page, 'KeyT'); await settle(page);
+      assert.ok(await page.evaluate(() => window.pluginState().pending));
+      await page.evaluate(() => { window.fixture.terminal.set({ writable: true, phase: 'connected' }); window.fixture.mountTerminal(false); });
+      await page.waitForFunction(() => document.activeElement?.id === 'terminal-input', null, { timeout: 2500 });
+      assert.equal(await page.evaluate(() => window.pluginState().navigating), false);
       const current = await page.evaluate(() => window.fixture.sidebarRight.active().id);
       assert.notEqual(current, previous);
       await page.evaluate(() => { window.originalTerminal = document.getElementById('terminal-input'); window.originalTerminal.value = 'unsent command'; });
-      for (let j = 0; j < 3; j++) { await key(page, 'KeyT'); await ready(page); }
+      await page.evaluate(() => window.fixture.navigate()); await ready(page);
+      // Pressing t once collapses, pressing t again reopens the same terminal with its draft intact.
+      await key(page, 'KeyT'); await ready(page);
+      assert.equal(await page.evaluate(() => window.fixture.sidebarRight.isExpanded()), false);
+      await key(page, 'KeyT'); await ready(page);
+      assert.equal(await page.evaluate(() => window.fixture.sidebarRight.isExpanded()), true);
       assert.equal(await page.evaluate(() => window.fixture.sidebarRight.active().id), current);
       assert.equal(await page.evaluate(() => document.getElementById('terminal-input') === window.originalTerminal), true);
       assert.equal(await page.locator('#terminal-input').inputValue(), 'unsent command');
     }
     assert.equal(await page.evaluate(() => window.fixture.sidebarRight.openTabs.getSnapshot().filter(t => t.kind === 'terminal').length), 2);
   });
+  await check('n c creates or reuses a session and focuses #composer directly once open', async page => {
+    await ready(page);
+    // 1. Blank-session reuse (current session s1 is already blank): focuses #composer directly.
+    await page.evaluate(() => window.fixture.sessionList.set({ byId: { s1: { blank: true } } }));
+    await key(page, 'KeyN'); await key(page, 'KeyC');
+    await page.waitForFunction(() => document.activeElement?.id === 'composer', null, { timeout: 2500 });
+    assert.equal(await page.evaluate(() => window.fixture.workspace.sessionRequested), true);
+    assert.equal(await page.evaluate(() => window.pluginState().navigating), false);
+    await key(page, 'Escape'); await ready(page);
+    // 2. Async new session mount (non-blank s1 -> s2 with loading -> open): waits for s2 open, then focuses #composer.
+    await page.evaluate(() => { window.fixture.sessionList.set({ byId: { s1: { blank: false } } }); window.fixture.workspace.sessionRequested = false; });
+    await key(page, 'KeyN'); await key(page, 'KeyC'); await settle(page);
+    await page.evaluate(() => window.fixture.commitSession('s2', 'loading')); await settle(page);
+    assert.notEqual(await page.evaluate(() => document.activeElement?.id), 'composer');
+    await page.evaluate(() => window.fixture.session.set({ openState: 'open', running: false }));
+    await page.waitForFunction(() => document.activeElement?.id === 'composer', null, { timeout: 2500 });
+    assert.equal(await page.evaluate(() => window.pluginState().navigating), false);
+  });
   await check('typing in a different input cancels a pending tool handoff', async page => {
-    await ready(page); await key(page, 'KeyT', { shift: true }); await settle(page);
+    await ready(page); await key(page, 'KeyN'); await key(page, 'KeyT'); await settle(page);
     await page.evaluate(() => { window.fixture.click('composer'); document.getElementById('composer').focus(); });
     await page.evaluate(() => { window.fixture.terminal.set({ writable: true, phase: 'connected' }); window.fixture.mountTerminal(); }); await settle(page);
     assert.equal(await page.evaluate(() => window.pluginState().pending), undefined);
     assert.equal(await page.evaluate(() => document.activeElement.id), 'composer');
   });
   await check('stale tool occurrence cannot complete a pending handoff', async page => {
-    await ready(page); await key(page, 'KeyT', { shift: true }); await settle(page);
+    await ready(page); await key(page, 'KeyN'); await key(page, 'KeyT'); await settle(page);
     await page.evaluate(() => { window.fixture.invalidateTarget(); window.fixture.terminal.set({ writable: true, phase: 'connected' }); window.fixture.mountTerminal(); }); await settle(page);
     assert.equal(await page.evaluate(() => window.pluginState().pending), undefined);
   });
-  await check('bracket tab switch and close keep navigation on the remaining current tool', async page => {
-    await ready(page); await key(page, 'KeyB', { shift: true }); await ready(page);
+  await check('Tab, Shift+Tab and g 1..9 badges switch tools cleanly while preserving native Tab inside modals and panels', async page => {
+    await ready(page);
+    await key(page, 'KeyN'); await key(page, 'KeyB'); await settle(page);
+    await key(page, 'Escape'); await ready(page);
     const second = await page.evaluate(() => window.fixture.sidebarRight.active().id); assert.notEqual(second, 'b1');
-    await key(page, 'BracketLeft'); await ready(page); assert.equal(await page.evaluate(() => window.fixture.sidebarRight.active().id), 'b1');
-    await key(page, 'BracketRight'); await ready(page); assert.equal(await page.evaluate(() => window.fixture.sidebarRight.active().id), second);
-    await key(page, 'KeyW'); await ready(page); assert.equal(await page.evaluate(() => window.fixture.sidebarRight.active().id), 'b1');
+    await key(page, 'KeyE'); await ready(page);
+    const third = await page.evaluate(() => window.fixture.sidebarRight.active().id);
+    // Clean tab strip normally: zero badges and zero host tab mutations.
+    assert.equal(await page.locator('.sc-tab-badge').count(), 0);
+    // Pressing g immediately shows badges 1, 2, 3 over visible tabs even before sc-panel delay.
+    await key(page, 'KeyG'); await settle(page);
+    assert.deepEqual(await page.locator('.sc-tab-badge').allInnerTexts(), ['1', '2', '3']);
+    // Pressing 2 jumps to second tab and clears badges immediately.
+    await key(page, 'Digit2'); await ready(page);
+    assert.equal(await page.locator('.sc-tab-badge').count(), 0);
+    assert.equal(await page.evaluate(() => window.fixture.sidebarRight.active().id), second);
+    // Tab and Shift+Tab cycle forward and backward.
+    assert.equal(await key(page, 'Tab'), true); await ready(page);
+    assert.equal(await page.evaluate(() => window.fixture.sidebarRight.active().id), third);
+    assert.equal(await key(page, 'Tab', { shift: true }), true); await ready(page);
+    assert.equal(await page.evaluate(() => window.fixture.sidebarRight.active().id), second);
+    // Inside .sc-panel or dialog, Tab is left to native focus traversal.
+    await key(page, 'Slash', { shift: true }); await settle(page);
+    await page.locator('.sc-panel button').first().focus();
+    assert.equal(await key(page, 'Tab'), false);
+    await key(page, 'Escape'); await ready(page);
+    await key(page, 'KeyW'); await ready(page);
+    assert.equal(await page.evaluate(() => window.fixture.sidebarRight.active().id), third);
   });
   await check('disabled auto-navigation can still be entered explicitly', async page => {
     await ready(page); await page.locator('#composer').focus(); await settle(page);
@@ -624,7 +833,7 @@ export async function pluginChecks(createPage) {
   });
   await check('navigation actions consume entry and manual help without reopening it at a different target', async page => {
     await ready(page); await freezeClock(page);
-    for (const [code, extra] of [['KeyB', {}], ['KeyC', {}], ['KeyR', {}], ['KeyR', {}], ['KeyS', {}], ['KeyS', {}], ['KeyE', {}], ['KeyB', { shift: true }], ['BracketLeft', {}], ['BracketRight', {}], ['KeyR', { shift: true }], ['KeyR', { shift: true }], ['KeyW', {}]]) {
+    for (const [code, extra] of [['KeyB', {}], ['KeyC', {}], ['KeyR', {}], ['KeyR', {}], ['KeyS', {}], ['KeyS', {}], ['KeyE', {}], ['Tab', {}], ['Tab', { shift: true }], ['KeyR', { shift: true }], ['KeyR', { shift: true }], ['KeyW', {}]]) {
       await page.evaluate(() => window.fixture.navigate()); await advance(page, 500);
       assert.equal(await page.locator('.sc-panel').count(), 1, `entry help before ${code}`);
       assert.equal(await key(page, code, extra), true); await advance(page, 100);
@@ -636,10 +845,10 @@ export async function pluginChecks(createPage) {
       assert.equal(await page.locator('.sc-panel').count(), 0, code);
       await advance(page, 3000); assert.equal(await page.locator('.sc-panel').count(), 0, code);
     }
-  });
+  }, { initialTabs: [{ sessionId: 's1', tabId: 'b1', kind: 'browser' }, { sessionId: 's1', tabId: 'b2', kind: 'browser' }, { sessionId: 's1', tabId: 'f1', kind: 'files' }] });
   await check('a delayed terminal handoff stays quiet after its shortcut, then explicit return still previews help', async page => {
     await ready(page); await freezeClock(page);
-    await key(page, 'KeyT', { shift: true }); await advance(page, 100);
+    await key(page, 'KeyT'); await advance(page, 100);
     assert.ok(await page.evaluate(() => window.pluginState().pending));
     await advance(page, 1500);
     await page.evaluate(() => { window.fixture.terminal.set({ writable: true, phase: 'connected' }); window.fixture.mountTerminal(true); });
@@ -650,12 +859,13 @@ export async function pluginChecks(createPage) {
   });
   await check('a new-session command stays quiet through a later session mount and readiness event', async page => {
     await ready(page); await freezeClock(page);
-    await key(page, 'KeyN'); await advance(page, 100);
+    await key(page, 'KeyN'); await key(page, 'KeyC'); await advance(page, 100);
     assert.equal(await page.evaluate(() => window.fixture.workspace.sessionRequested), true);
     await advance(page, 500);
     await page.evaluate(() => window.fixture.commitSession('s2')); await advance(page, 100);
     await page.evaluate(() => window.fixture.session.set({ openState: 'open', running: false }));
-    await advance(page, 100); await ready(page);
+    await advance(page, 100);
+    assert.equal(await page.evaluate(() => document.activeElement.id), 'composer');
     await advance(page, 3000); assert.equal(await page.locator('.sc-panel').count(), 0);
   });
   await check('a scheduled preview is cancelled by a click elsewhere, entering an input, window blur and disposal', async page => {
@@ -753,9 +963,9 @@ export async function pluginChecks(createPage) {
       assert.equal(await page.evaluate(() => window.pluginState().navigating), true);
     }
   });
-  await check('g p and g a open Plugins and Schedules, focus search with i, return on Esc, and close on w or c', async page => {
+  await check('g e and g a open Plugins and Schedules, focus search with i, return on Esc, and close on w or c', async page => {
     await ready(page);
-    await key(page, 'KeyG'); await key(page, 'KeyP'); await ready(page); await settle(page);
+    await key(page, 'KeyG'); await key(page, 'KeyE'); await ready(page); await settle(page);
     assert.equal(await page.evaluate(() => window.fixture.panelInfo.getSnapshot().activePanelId), 'plugins');
     assert.equal(await page.locator('.sc-focus-cue[data-sc-focus-area="plugins"]').count(), 1);
     await key(page, 'Slash', { shift: true }); await settle(page);
@@ -773,7 +983,7 @@ export async function pluginChecks(createPage) {
     assert.equal(await page.evaluate(() => window.fixture.panelInfo.getSnapshot().activePanelId), null);
     assert.equal(await page.evaluate(() => window.fixture.sidebarRight.mounted.getSnapshot()), 's1');
     assert.equal(await page.locator('.sc-focus-cue[data-sc-focus-area="conversation"]').count(), 1);
-    await key(page, 'KeyG'); await key(page, 'KeyP'); await ready(page);
+    await key(page, 'KeyG'); await key(page, 'KeyE'); await ready(page);
     await key(page, 'KeyC'); await ready(page);
     assert.equal(await page.evaluate(() => window.fixture.panelInfo.getSnapshot().activePanelId), null);
   });
@@ -789,7 +999,7 @@ export async function pluginChecks(createPage) {
     assert.equal(await page.evaluate(() => window.fixture.sidebarRight.openTabs.getSnapshot().length), 1);
 
     await page.evaluate(() => { window.fixture.commitSession('s2', 'open'); }); await ready(page);
-    await key(page, 'KeyG'); await key(page, 'KeyP'); await ready(page);
+    await key(page, 'KeyG'); await key(page, 'KeyE'); await ready(page);
     await key(page, 'KeyW'); await ready(page);
     assert.equal(await page.evaluate(() => window.fixture.sidebarRight.mounted.getSnapshot()), 's2');
     await key(page, 'KeyG'); await key(page, 'KeyB'); await ready(page);
@@ -822,18 +1032,21 @@ export async function pluginChecks(createPage) {
     await key(page, 'KeyW'); await ready(page);
     assert.equal(await page.evaluate(() => window.fixture.panelInfo.getSnapshot().activePanelId), null);
   });
-  await check('tool keys from global pages return to the session workbench in one step and keep layout when unavailable', async page => {
+  await check('tool keys from global pages return to the session workbench in one step without collapsing and keep layout when unavailable', async page => {
     await ready(page);
-    await key(page, 'KeyB', { shift: true }); await ready(page);
+    await key(page, 'KeyN'); await key(page, 'KeyB'); await settle(page);
+    await key(page, 'Escape'); await ready(page);
     const second = await page.evaluate(() => window.fixture.sidebarRight.active().id);
-    await key(page, 'KeyG'); await key(page, 'KeyP'); await ready(page);
-    await key(page, 'BracketLeft'); await ready(page);
+    await key(page, 'KeyG'); await key(page, 'KeyE'); await ready(page);
+    await key(page, 'Tab', { shift: true }); await ready(page);
     assert.equal(await page.evaluate(() => window.fixture.panelInfo.getSnapshot().activePanelId), null);
     assert.equal(await page.evaluate(() => window.fixture.sidebarRight.active().id), 'b1');
 
+    // Pressing b on Schedules reveals b1 (kept expanded, NOT collapsed!).
     await key(page, 'KeyG'); await key(page, 'KeyA'); await ready(page);
     await key(page, 'KeyB'); await ready(page);
     assert.equal(await page.evaluate(() => window.fixture.panelInfo.getSnapshot().activePanelId), null);
+    assert.equal(await page.evaluate(() => window.fixture.sidebarRight.isExpanded()), true);
     assert.equal(await page.evaluate(() => window.fixture.sidebarRight.active().id), 'b1');
     assert.equal(second !== 'b1', true);
 
@@ -842,7 +1055,7 @@ export async function pluginChecks(createPage) {
     assert.equal(await page.locator('.sc-notice').textContent(), '定时任务页面当前不可用。');
 
     await page.evaluate(() => { window.fixture.commitSession(undefined, 'open'); }); await ready(page);
-    await key(page, 'KeyG'); await key(page, 'KeyP'); await ready(page);
+    await key(page, 'KeyG'); await key(page, 'KeyE'); await ready(page);
     await key(page, 'KeyB'); await settle(page);
     assert.equal(await page.evaluate(() => window.fixture.panelInfo.getSnapshot().activePanelId), 'plugins');
     assert.equal(await page.locator('.sc-notice').textContent(), '先打开一个会话，再打开工具面板。');
@@ -856,13 +1069,17 @@ export async function pluginChecks(createPage) {
       }
     });
 
-    // 1. Single keys, Shift uppercase, punctuation (?, [, ]) and g sequences all work when host reports composing: true (keyCode 229 / WeType / SCIM).
-    assert.equal(await key(page, 'KeyB', { shift: true, composing: true }), true); await ready(page);
+    // 1. n/g prefixes, Tab/Shift+Tab, digits and punctuation all work when host reports composing: true (keyCode 229 / WeType / SCIM).
+    assert.equal(await key(page, 'KeyN', { composing: true }), true);
+    assert.equal(await key(page, 'KeyB', { composing: true }), true); await settle(page);
     const createdId = await page.evaluate(() => window.fixture.sidebarRight.active().id);
     assert.notEqual(createdId, 'b1');
-    assert.equal(await key(page, 'BracketLeft', { composing: true }), true); await ready(page);
+    assert.equal(await page.evaluate(() => document.activeElement.id), 'address');
+    await page.keyboard.press('Escape'); await ready(page);
+    assert.equal(await key(page, 'Tab', { shift: true, composing: true }), true); await ready(page);
     assert.equal(await page.evaluate(() => window.fixture.sidebarRight.active().id), 'b1');
-    assert.equal(await key(page, 'BracketRight', { composing: true }), true); await ready(page);
+    assert.equal(await key(page, 'KeyG', { composing: true }), true);
+    assert.equal(await key(page, 'Digit2', { composing: true }), true); await ready(page);
     assert.equal(await page.evaluate(() => window.fixture.sidebarRight.active().id), createdId);
 
     // Passive default navigation (focus on ordinary button rather than anchor) also works with composing: true.
@@ -887,7 +1104,7 @@ export async function pluginChecks(createPage) {
       document.getElementById('composer').dispatchEvent(new CompositionEvent('compositionend', { bubbles: true }));
     }); await settle(page);
     assert.equal(await page.evaluate(() => window.pluginState().prefix), 'g');
-    assert.equal(await key(page, 'KeyP', { composing: true }), true); await ready(page);
+    assert.equal(await key(page, 'KeyE', { composing: true }), true); await ready(page);
     assert.equal(await page.evaluate(() => window.fixture.panelInfo.getSnapshot().activePanelId), 'plugins');
     assert.equal(await key(page, 'KeyC', { composing: true }), true); await ready(page);
     assert.equal(await page.evaluate(() => window.fixture.panelInfo.getSnapshot().activePanelId), null);

@@ -1,12 +1,13 @@
 import fs from 'node:fs/promises';
 const root = new URL('../', import.meta.url);
-const [core, navigation, tools, toolNavigation, client, css] = await Promise.all(['src/core.js','src/default-navigation.js','src/tool-tabs.js','src/tool-navigation.js','src/client.js','src/styles.css'].map(p => fs.readFile(new URL(p,root),'utf8')));
+const [core, navigation, tools, toolNavigation, client, css, sessionSearch] = await Promise.all(['src/core.js','src/default-navigation.js','src/tool-tabs.js','src/tool-navigation.js','src/client.js','src/styles.css','src/session-search.js'].map(p => fs.readFile(new URL(p,root),'utf8')));
 await fs.mkdir(new URL('lib/',root),{recursive:true});
 await fs.mkdir(new URL('dist/',root),{recursive:true});
 const body = client.replace('/* BUILD_CORE */',core.replace(/^export /gm,''))
   .replace('/* BUILD_NAVIGATION */',navigation.replace(/^export /gm,''))
   .replace('/* BUILD_TOOLS */',tools.replace(/^export /gm,''))
   .replace('/* BUILD_TOOL_NAVIGATION */',toolNavigation.replace(/^export /gm,''))
+  .replace('/* BUILD_SESSION_SEARCH */',sessionSearch.replace(/^export /gm,''))
   .replace('/* BUILD_CSS */',`const STYLE = ${JSON.stringify(css)};`);
 async function writeAtomic(path, text) {
   const target = new URL(path,root);

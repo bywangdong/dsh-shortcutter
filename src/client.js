@@ -9,8 +9,9 @@ window.__ModuleLoader__.load({
     /* BUILD_NAVIGATION */
     /* BUILD_TOOLS */
     /* BUILD_TOOL_NAVIGATION */
+    /* BUILD_SESSION_SEARCH */
     /* BUILD_CSS */
-    const inject = ["slots", "shortcuts", "layout", "sidebarRight", "conversation", "sessions", "uiWorkspace", "webTerminals"];
+    const inject = ["slots", "shortcuts", "layout", "sidebarRight", "conversation", "sessions", "workspaces", "uiWorkspace", "webTerminals"];
     // which-key timing. Passive entry (mouse, blur, window focus, handoffs) is
     // silent; only an explicit keyboard return that is followed by a pause
     // previews the keys. A quick follow-up key cancels the preview entirely.
@@ -36,6 +37,7 @@ window.__ModuleLoader__.load({
       let prefixShown = false, prefixToken = 0, prefixShowTimer, prefixExpireTimer;
       let firstNavigation = true, seenSession = false, inputReset = 0, resetTimer;
       let lastSession, previousSession, notice = "", noticeTimer, returnElement;
+      let searchRequest, searchDialog, sessionHistory = [];
       let raw = null, storageError = "", config = defaultConfig(), stopRecording = () => {};
       const listeners = new Set();
       const toolHistory = createToolTabHistory();
@@ -52,7 +54,7 @@ window.__ModuleLoader__.load({
         // Targets are fresh host objects: compare their occurrence and navigation
         // identity, not the wrapper. A pending view commit can explicitly wake us.
         const next = [navigating, hints, entryHint, prefix, prefixShown, area, activePanel(), navigationScope, pending, notice,
-          config, raw, storageError, mounted(), active?.id, active?.kind, active?.contentId,
+          config, raw, storageError, searchRequest, mounted(), active?.id, active?.kind, active?.contentId,
           ctx.sidebarRight.isExpanded(), target?.sessionId, target?.paneId, target?.host,
           target?.tabId, target?.occurrence, target?.navigationRevision];
         if (!force && published && next.every((value, index) => value === published[index])) return;
@@ -107,7 +109,7 @@ window.__ModuleLoader__.load({
       const mounted = () => ctx.sidebarRight.mounted.getSnapshot();
       const activePanel = () => ctx.layout.panelInfo?.getSnapshot()?.activePanelId || null;
       const tabs = () => ctx.sidebarRight.openTabs.getSnapshot().filter(t => t.sessionId === mounted());
-      const own = element => !!element && (!!root?.contains(element) || !!layer?.contains(element));
+      const own = element => !!element && (!!root?.contains(element) || !!layer?.contains(element) || !!searchDialog?.contains(element));
       const visible = el => !!el?.isConnected && !!el.getClientRects().length && getComputedStyle(el).visibility !== "hidden";
       const orderedTabs = () => orderToolTabs(tabs(), [...document.querySelectorAll('[role="tab"][data-dockkit-tab]')]
         .filter(el => visible(el) && el.closest("[data-sidebar-right-session]")?.getAttribute("data-sidebar-right-session") === mounted())
@@ -189,7 +191,9 @@ window.__ModuleLoader__.load({
           }
           if (context.navigating && (prefix || hints || entryHint)) {
             prevent(); stop();
-            inputReset++; prefix = ""; hints = false; clearHint(); clearPrefixTimers(); publish();
+            inputReset++; prefix = ""; hints = false; clearHint(); clearPrefixTimers();
+            if (own(targetEl)) focusScopeAnchor(context.scope).focus({ preventScroll: true });
+            publish();
             return true;
           }
           return false;
@@ -214,19 +218,33 @@ window.__ModuleLoader__.load({
         prevent();
         inputReset++; clearHint();
         prefix = ""; clearPrefixTimers(); hints = false;
+        if (own(targetEl)) anchor?.focus({ preventScroll: true });
         publish();
         return true;
       };
-      const requestNavigation = (toolTarget, force = false) => {
+      const requestNavigation = (toolTarget, force = false, extra = {}) => {
         cancelPending();
         if ((!toolTarget && !config.autoNavigate && !force) || !document.hasFocus()) return;
-        pending = { id: ++serial, session: mounted(), toolTarget, origin: document.activeElement };
+        pending = { id: ++serial, session: mounted(), toolTarget, origin: document.activeElement, ...extra };
         // A timeout only abandons the request. It never takes focus or retries.
         pendingTimer = setTimeout(() => {
           if (pending) { cancelPending(); tell("内容仍在准备中，可按回到快捷模式快捷键继续。"); }
         }, 5000);
         publish();
       };
+      const requestInput = (enter, toolTarget, extra = {}) => {
+        cancelPending();
+        if (!document.hasFocus()) return;
+        const id = ++serial;
+        pending = { id, session: mounted(), toolTarget, enter, origin: document.activeElement, ...extra };
+        pendingTimer = setTimeout(() => {
+          if (pending?.id === id) { cancelPending(); tell("内容仍在准备中，请点击输入区域进入。"); }
+        }, 5000);
+        publish();
+      };
+      const inPaneTarget = (captured, el) => visible(el)
+        && el.closest("[data-dockkit-pane]")?.getAttribute("data-dockkit-pane") === captured?.paneId
+        && el.closest("[data-sidebar-right-session]")?.getAttribute("data-sidebar-right-session") === captured?.sessionId;
       const saveConfig = (candidate, expected) => {
         const result = validateConfig(candidate);
         if (result.error) return result.error;
@@ -241,13 +259,20 @@ window.__ModuleLoader__.load({
         } catch { return "保存失败，原有设置仍然有效。"; }
       };
       const currentTarget = () => target && ctx.sidebarRight.isTargetCurrent(target) ? target : ctx.sidebarRight.commandTarget(null);
-      const openTool = (kind, create = false) => {
+      const openTool = (kind, create = false, revealed = false) => {
         if (!mounted()) throw new Error("先打开一个会话，再打开工具面板。");
         rememberActiveTool();
         const tool = kind === "browser" || kind === "terminal";
-        // A tool key always recalls the current/recent tab, creating only when
-        // none exists. Explicit new-tool commands bypass this lookup.
         const active = ctx.sidebarRight.active();
+        if (!create && !revealed && ctx.sidebarRight.isExpanded() && active?.kind === kind) {
+          cancelPending();
+          ctx.sidebarRight.toggleExpanded();
+          area = "conversation"; target = undefined;
+          requestNavigation(undefined, true);
+          return;
+        }
+        // A tool key recalls the current/recent tab (creating only when none
+        // exists) and collapses the dock when pressed again on the visible kind.
         const existing = !create && toolHistory.find(mounted(), kind, orderedTabs(), active?.id);
         if (existing) {
           if (existing.tabId !== active?.id) ctx.sidebarRight.focus(existing.tabId);
@@ -256,9 +281,22 @@ window.__ModuleLoader__.load({
         area = kind; target = ctx.sidebarRight.commandTarget(null);
         rememberActiveTool();
         if (tool && (!target?.tabId || ctx.sidebarRight.active()?.kind !== kind)) throw new Error("工具尚未准备好，请点击标签进入。");
-        // Both creation paths and recalled tools wait for their own view to
-        // finish mounting/autofocus before handing back to navigation once.
-        requestNavigation(tool ? target : undefined);
+        if (create && kind === "browser") {
+          const input = [...document.querySelectorAll("[data-dockkit-pane] input")].find(el => inPaneTarget(target, el) && isNavigationInput(el));
+          if (input) {
+            cancelPending(); manualNavigation = false;
+            input.focus({ preventScroll: true }); input.select?.();
+            navigationObserver?.refresh(); publish();
+            return;
+          }
+          requestInput("browser", target);
+          return;
+        }
+        if (create && kind === "terminal") {
+          requestInput("terminal", target);
+          return;
+        }
+        requestNavigation(tool ? target : undefined, true);
       };
       const closeTool = () => {
         cancelPending();
@@ -296,9 +334,7 @@ window.__ModuleLoader__.load({
           if (!captured || !ctx.sidebarRight.isTargetCurrent(captured)) throw new Error("当前面板已变化，请重新选择。");
           // DSH has no public focus facade for these two components. This narrow
           // adapter only focuses an existing visible node; it never handles its keys.
-          const inPane = el => visible(el)
-            && el.closest("[data-dockkit-pane]")?.getAttribute("data-dockkit-pane") === captured.paneId
-            && el.closest("[data-sidebar-right-session]")?.getAttribute("data-sidebar-right-session") === captured.sessionId;
+          const inPane = el => inPaneTarget(captured, el);
           const selectors = area === "terminal" ? [".xterm textarea"]
             : area === "browser" ? ["[data-sidebar-browser-frame]", "[data-dockkit-pane] input"] : [];
           let element;
@@ -352,6 +388,26 @@ window.__ModuleLoader__.load({
         }
         return prev;
       };
+      const openSessionSearch = () => {
+        cancelPending(); clearPrefixTimers();
+        if (searchRequest) { searchDialog?.querySelector("input")?.focus(); return; }
+        searchRequest = { id: ++serial, origin: document.activeElement, area, target, session: mounted(), panel: activePanel() };
+        publish();
+      };
+      const closeSessionSearch = (restore = true) => {
+        const saved = searchRequest;
+        if (!saved) return;
+        searchRequest = undefined;
+        searchDialog?.close();
+        if (restore && alive && document.hasFocus()) {
+          const sameSurface = saved.session === mounted() && saved.panel === activePanel();
+          area = sameSurface ? saved.area : "conversation";
+          target = sameSurface && saved.target && ctx.sidebarRight.isTargetCurrent(saved.target) ? saved.target : undefined;
+          manualNavigation = true;
+          (sameSurface && visible(saved.origin) ? saved.origin : anchor)?.focus({ preventScroll: true });
+        }
+        navigationObserver?.refresh(); publish();
+      };
       const run = id => {
         if (!alive) return;
         // A command consumes the guide. Its asynchronous tab/session/focus
@@ -360,8 +416,10 @@ window.__ModuleLoader__.load({
           prefix = ""; hints = false; clearHint();
           // Leaving settings is explicit navigation, through the host's public
           // modal close helper; ordinary mode changes never close a layer.
+          const fromModal = !!navigationScope;
           if (navigationScope && !["enter", "settings", "closeTab"].includes(id)) closeTopModal(document);
           if (id === "enter") enterContent();
+          else if (id === "searchSessions") openSessionSearch();
           else if (id === "closeTab") {
             if (navigationScope) {
               cancelPending(); closeTopModal(document); requestNavigation(undefined, true);
@@ -371,8 +429,11 @@ window.__ModuleLoader__.load({
             } else closeTool();
           }
           else if (id === "newSession") {
+            const prevSession = mounted();
+            const reusableBlank = !!prevSession && !!ctx.sessions.list?.getSnapshot?.()?.byId?.[prevSession]?.blank;
+            area = "conversation"; target = undefined;
+            requestInput("conversation", undefined, { awaitSessionChange: !!prevSession && !reusableBlank });
             ctx.uiWorkspace.startSession();
-            area = "conversation"; target = undefined; requestNavigation();
           }
           else if (id === "sidebar") {
             const opening = columns().frame?.hasAttribute("data-sidebar-collapsed");
@@ -392,8 +453,8 @@ window.__ModuleLoader__.load({
             area = ctx.sidebarRight.isExpanded() ? ctx.sidebarRight.active()?.kind || "right" : "conversation";
             target = ctx.sidebarRight.commandTarget(null); requestNavigation();
           } else if (["files", "browser", "terminal"].includes(id)) {
-            revealSession("先打开一个会话，再打开工具面板。");
-            openTool(id);
+            const fromPanel = revealSession("先打开一个会话，再打开工具面板。");
+            openTool(id, false, fromModal || !!fromPanel);
           } else if (id === "newBrowser" || id === "newTerminal") {
             revealSession("先打开一个会话，再打开工具面板。");
             openTool(id === "newBrowser" ? "browser" : "terminal", true);
@@ -436,6 +497,19 @@ window.__ModuleLoader__.load({
             if (!ctx.sidebarRight.isExpanded()) ctx.sidebarRight.toggleExpanded();
             rememberActiveTool();
             area = next.kind; target = ctx.sidebarRight.commandTarget(null); requestNavigation(target, true);
+          } else if (id.startsWith("tab:")) {
+            const index = Number(id.slice(4));
+            const prev = revealSession("先打开一个会话，再切换工具标签。");
+            const list = orderedTabs();
+            const chosen = list[index];
+            if (!chosen) {
+              if (prev) ctx.layout.selectPanel(prev);
+              throw new Error(list.length ? `当前只有 ${list.length} 个工具标签。` : "当前会话还没有打开的工具标签。");
+            }
+            if (chosen.tabId !== ctx.sidebarRight.active()?.id) ctx.sidebarRight.focus(chosen.tabId);
+            if (!ctx.sidebarRight.isExpanded()) ctx.sidebarRight.toggleExpanded();
+            rememberActiveTool();
+            area = chosen.kind; target = ctx.sidebarRight.commandTarget(null); requestNavigation(target, true);
           } else if (id === "settings") openSettings();
           else if (id === "pluginSettings") openPluginSettings();
           publish();
@@ -446,11 +520,97 @@ window.__ModuleLoader__.load({
           tell(text);
         }
       };
-      const keyCaps = sequence => sequence ? sequence.split(" ").map((key, i) => h("kbd", { key: i }, key === "Space" ? "space" : key)) : h("span", { className: "sc-muted" }, "未绑定");
+      const formatKeyCap = key => key === "Space" ? "space" : key === "Shift+Tab" ? "⇧ Tab" : key;
+      const keyCaps = sequence => sequence ? sequence.split(" ").map((key, i) => h("kbd", { key: i }, formatKeyCap(key))) : h("span", { className: "sc-muted" }, "未绑定");
       const areas = { sidebar: "左侧栏", conversation: "对话", terminal: "终端", browser: "浏览器", files: "文件", right: "工具面板" };
       const panelTitles = { plugins: "插件", schedules: "定时任务" };
       const surfaceArea = () => navigationScope ? "settings" : area === "conversation" && activePanel() ? activePanel() : area;
       const surfaceLabel = () => navigationScope ? "设置" : area === "conversation" && activePanel() ? panelTitles[activePanel()] || "页面" : areas[area] || "工具面板";
+
+      function SessionSearch({ request }) {
+        const list = React.useSyncExternalStore(fn => ctx.sessions.list.subscribe(fn), () => ctx.sessions.list.getSnapshot());
+        const workspaces = React.useSyncExternalStore(fn => ctx.workspaces.list.subscribe(fn), () => ctx.workspaces.list.getSnapshot());
+        const [query, setQuery] = React.useState("");
+        const [selectedId, setSelectedId] = React.useState();
+        const [message, setMessage] = React.useState("");
+        const dialogRef = React.useRef(null), inputRef = React.useRef(null), closeRef = React.useRef(null), composing = React.useRef(false);
+        const current = mounted() || lastSession;
+        const matches = React.useMemo(() => sessionSearchRows(list, workspaces, { query, current, history: sessionHistory }), [list, workspaces, query, current]);
+        const rows = matches.slice(0, 100);
+        const selected = rows.find(row => row.id === selectedId) || rows[0];
+        const loading = list.phase !== "ready" || workspaces.phase !== "ready";
+        const close = () => { if (searchRequest === request) closeSessionSearch(); };
+        React.useLayoutEffect(() => {
+          const dialog = dialogRef.current;
+          searchDialog = dialog;
+          dialog.showModal();
+          inputRef.current.focus({ preventScroll: true });
+          navigationObserver?.refresh();
+          return () => {
+            dialog.close();
+            if (searchDialog === dialog) searchDialog = undefined;
+          };
+        }, []);
+        React.useEffect(() => {
+          dialogRef.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest" });
+        }, [selected?.id]);
+        const choose = id => {
+          // Recheck the authoritative lists at activation: a row can be archived
+          // or removed between rendering and the user's Enter/click.
+          const exists = sessionSearchRows(ctx.sessions.list.getSnapshot(), ctx.workspaces.list.getSnapshot(), { current }).some(row => row.id === id);
+          if (!exists) { setMessage("这个会话已不可用，请选择其他会话。"); return; }
+          closeSessionSearch(false);
+          area = "conversation"; target = undefined;
+          requestNavigation(undefined, true, { selectSession: id, awaitSessionChange: mounted() !== id });
+          try { ctx.uiWorkspace.openSession(id); }
+          catch { cancelPending(); take(); tell("会话打开失败，请重试。"); }
+          publish();
+        };
+        const onKeyDown = event => {
+          if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229 || composing.current
+            || event.metaKey || event.ctrlKey || event.altKey) return;
+          if (event.key === "Tab") {
+            event.preventDefault(); event.stopPropagation();
+            (event.target === inputRef.current ? closeRef.current : inputRef.current)?.focus({ preventScroll: true });
+            return;
+          }
+          if (event.shiftKey) return;
+          if (event.key === "Escape") {
+            event.preventDefault(); event.stopPropagation(); close();
+          } else if (event.target === inputRef.current && ["ArrowDown", "ArrowUp", "Enter"].includes(event.key)) {
+            event.preventDefault(); event.stopPropagation();
+            if (event.key === "Enter") { if (!event.repeat && selected) choose(selected.id); }
+            else if (rows.length) {
+              const index = rows.findIndex(row => row.id === selected?.id);
+              setSelectedId(rows[Math.max(0, Math.min(rows.length - 1, index + (event.key === "ArrowDown" ? 1 : -1)))].id);
+            }
+          }
+        };
+        return createPortal(h("dialog", { ref: dialogRef, className: "sc-root sc-dialog sc-session-search", "aria-label": "搜索会话", "aria-modal": true,
+          onKeyDown, onClose: close,
+          onCancel: event => { event.preventDefault(); if (!composing.current) close(); },
+          onClick: event => {
+            if (event.target !== event.currentTarget) return;
+            const rect = event.currentTarget.getBoundingClientRect();
+            if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) close();
+          } },
+          h("header", { className: "sc-search-header" },
+            h("input", { ref: inputRef, type: "text", role: "combobox", "aria-label": "搜索会话名称或工作区", "aria-autocomplete": "list", "aria-expanded": true,
+              "aria-controls": "sc-session-results", "aria-activedescendant": selected ? `sc-session-result-${selected.id}` : undefined,
+              placeholder: "搜索会话名称或工作区…", value: query, autoComplete: "off", spellCheck: false,
+              onCompositionStart: () => { composing.current = true; }, onCompositionEnd: () => { composing.current = false; },
+              onChange: event => { setQuery(event.target.value); setSelectedId(undefined); setMessage(""); } }),
+            h("button", { ref: closeRef, type: "button", "aria-label": "关闭搜索", onClick: close }, "×")),
+          h("p", { className: "sc-search-status", role: "status" }, message || (loading ? "正在加载会话…" : matches.length
+            ? `${query.trim() ? "搜索结果" : "最近访问优先"} · ${matches.length} 个会话${matches.length > rows.length ? "，显示前 100 个，请输入关键词缩小范围" : ""}`
+            : query.trim() ? "没有匹配的会话，试试其他关键词。" : "暂无可搜索的会话。")),
+          h("div", { id: "sc-session-results", className: "sc-search-results", role: "listbox", "aria-label": "会话搜索结果", "aria-busy": loading },
+            rows.map(row => h("button", { key: row.id, id: `sc-session-result-${row.id}`, type: "button", className: "sc-search-result", role: "option",
+              "aria-selected": row.id === selected?.id, tabIndex: -1, title: `${row.title}\n${row.workspace}`, onPointerDown: event => event.preventDefault(), onClick: () => choose(row.id) },
+              h("span", { className: "sc-search-text" }, h("strong", null, row.title), h("small", null, row.workspace)),
+              h("span", { className: "sc-muted" }, row.current ? "当前" : row.recent ? "最近访问" : "")))),
+          h("footer", { className: "sc-search-footer" }, h("span", null, keyCaps("↑ ↓"), " 选择"), h("span", null, keyCaps("Enter"), " 打开"), h("span", null, keyCaps("Esc"), " 返回"))), document.body);
+      }
 
       function FocusCue() {
         const [cue, setCue] = React.useState(null);
@@ -515,6 +675,53 @@ window.__ModuleLoader__.load({
         }, []);
         return navigating && cue && h("div", { key: cue.key, className: "sc-focus-cue", "aria-hidden": true, "data-sc-focus-area": cue.area,
           style: { left: cue.left, top: cue.top, width: cue.width, height: Math.max(12, cue.inset + 5), "--sc-cue-inset": `${cue.inset}px` } });
+      }
+
+      function TabBadges() {
+        const [badges, setBadges] = React.useState([]);
+        React.useLayoutEffect(() => {
+          let frameId = 0, stopped = false;
+          const syncBadges = () => {
+            frameId = 0;
+            if (stopped) return;
+            if (!navigating || prefix !== "g" || navigationScope || activePanel() || !ctx.sidebarRight.isExpanded() || document.hidden || !document.hasFocus()) {
+              setBadges(prev => prev.length ? [] : prev);
+              return;
+            }
+            const session = mounted();
+            const tabEls = [...document.querySelectorAll('[role="tab"][data-dockkit-tab]')]
+              .filter(el => visible(el) && el.closest("[data-sidebar-right-session]")?.getAttribute("data-sidebar-right-session") === session);
+            const byId = new Map(tabEls.map(el => [el.getAttribute("data-dockkit-tab"), el]));
+            const next = orderToolTabs(tabs(), [...byId.keys()]).slice(0, 9).map((tab, index) => {
+              const digit = String(index + 1);
+              if (COMMANDS.some(c => config.bindings[c.id] === `g ${digit}`)) return null;
+              const el = byId.get(tab.tabId);
+              if (!el) return null;
+              const rect = el.getBoundingClientRect();
+              if (rect.width <= 0 || rect.height <= 0) return null;
+              return { key: tab.tabId, digit, left: Math.round(Math.max(2, rect.left + 2)), top: Math.round(Math.max(2, rect.top - 5)) };
+            }).filter(Boolean);
+            setBadges(prev => JSON.stringify(prev) === JSON.stringify(next) ? prev : next);
+          };
+          const schedule = () => { if (!stopped && !frameId) frameId = requestAnimationFrame(syncBadges); };
+          const tabMutations = new MutationObserver(records => {
+            if (records.some(record => !own(record.target))) schedule();
+          });
+          tabMutations.observe(document.body, { subtree: true, childList: true, attributes: true,
+            attributeFilter: ["aria-selected", "data-sidebar-right-open", "data-rightbar-fullscreen"] });
+          const off = subscribe(schedule);
+          window.addEventListener("resize", schedule);
+          document.addEventListener("scroll", schedule, true);
+          syncBadges();
+          return () => {
+            stopped = true; cancelAnimationFrame(frameId); tabMutations.disconnect(); off();
+            window.removeEventListener("resize", schedule);
+            document.removeEventListener("scroll", schedule, true);
+          };
+        }, []);
+        return badges.length > 0 && h("div", { className: "sc-tab-badges", "aria-hidden": true },
+          badges.map(b => h("kbd", { key: b.key, className: "sc-tab-badge", "data-sc-tab-badge": b.digit,
+            style: { left: b.left, top: b.top } }, b.digit)));
       }
 
       function Preferences(props) {
@@ -644,7 +851,7 @@ window.__ModuleLoader__.load({
               h("div", { className: "sc-section-heading" },
                 h("div", null,
                   h("h3", null, "快捷按键"),
-                  h("p", null, "区分大小写（b 复用、B 新建）；g 与 ? 固定保留，留空取消绑定。")),
+                  h("p", null, "支持单键、Tab / Shift+Tab，或 g / n 加一个键；g、n、? 固定保留，留空取消绑定。")),
                 h("button", { type: "button", onClick: () => setDraft({ ...draft, bindings: defaultConfig().bindings }) }, "恢复默认键位")),
               h("div", { className: "sc-binding-groups" }, groups.map(group => h("div", { className: "sc-binding-group", key: group },
                 h("div", { className: "sc-group-title" }, group),
@@ -668,7 +875,30 @@ window.__ModuleLoader__.load({
         const [committed, setCommitted] = React.useState();
         React.useEffect(() => {
           if (!pending || pending.id !== token) return;
-          if (pending.session !== mounted()) { cancelPending(); return; }
+          if (pending.awaitSessionChange) {
+            if (mounted() && (pending.selectSession ? mounted() === pending.selectSession : mounted() !== pending.session)) {
+              pending = { ...pending, session: mounted(), awaitSessionChange: false };
+            } else return;
+          }
+          if (pending.session !== mounted()) {
+            if (pending.enter === "conversation" && mounted()) pending = { ...pending, session: mounted() };
+            else { cancelPending(); return; }
+          }
+          if (pending.enter === "browser") {
+            const context = navigationContext();
+            if (!pending.toolTarget || !ctx.sidebarRight.isTargetCurrent(pending.toolTarget)
+              || currentTab?.id !== pending.toolTarget.tabId
+              || context.scope || ["menu", "modal", "inactive", "composition"].includes(context.reason)) {
+              cancelPending(); return;
+            }
+            const input = [...document.querySelectorAll("[data-dockkit-pane] input")]
+              .find(el => inPaneTarget(pending.toolTarget, el) && isNavigationInput(el));
+            if (!input) return;
+            cancelPending(); manualNavigation = false;
+            input.focus({ preventScroll: true }); input.select?.();
+            navigationObserver?.refresh(); publish();
+            return;
+          }
           if (pending.toolTarget) {
             const context = navigationContext(), focused = ctx.sidebarRight.focusedTarget(context.active);
             // Retained terminal state can be writable before its lazy view has
@@ -689,6 +919,33 @@ window.__ModuleLoader__.load({
             if (status === "cancel" || context.scope) { cancelPending(); return; }
             if (status === "wait") return;
           }
+          if (pending.enter === "terminal") {
+            if (model && !state?.writable) {
+              if (["closed", "failed"].includes(state?.phase) || state?.info?.state === "exited") cancelPending();
+              return;
+            }
+            if (committed !== token) { setCommitted(token); return; }
+            const textarea = [...document.querySelectorAll(".xterm textarea")].find(el => inPaneTarget(pending.toolTarget, el));
+            if (!textarea) return;
+            cancelPending(); manualNavigation = false;
+            textarea.focus({ preventScroll: true });
+            navigationObserver?.refresh(); publish();
+            return;
+          }
+          if (pending.enter === "conversation") {
+            if (!sessionId) return;
+            if (openState === "error") { take(token); return; }
+            if (openState && openState !== "open") return;
+            const context = navigationContext();
+            if (context.scope || ["menu", "modal", "inactive", "composition"].includes(context.reason)) { cancelPending(); return; }
+            const binding = ctx.sessions.binding(sessionId);
+            if (!binding) return;
+            if (committed !== token) { setCommitted(token); return; }
+            cancelPending(); manualNavigation = false;
+            ctx.conversation.input.for(binding.ctx).focus();
+            navigationObserver?.refresh(); publish();
+            return;
+          }
           if (sessionId && openState !== "open" && openState !== "error") return;
           if (model && !state?.writable && !["closed", "failed"].includes(state?.phase) && state?.info?.state !== "exited") return;
           // Wait for public readiness and one additional plugin-owned React commit.
@@ -701,6 +958,7 @@ window.__ModuleLoader__.load({
           const key = config.bindings[c.id];
           return prefix ? key.startsWith(prefix + " ") : key && !key.includes(" ");
         });
+        const gTabCount = prefix === "g" && !navigationScope && !activePanel() ? Math.min(9, tabs().length) : 0;
         const keepFocus = event => { if (event.pointerType !== "touch") event.preventDefault(); };
         // A preview that appears under a resting cursor must still expire. Only
         // real movement inside it (or keyboard focus) pauses its reading time.
@@ -715,15 +973,18 @@ window.__ModuleLoader__.load({
         const overlay = h("div", { className: "sc-root", style: { WebkitAppRegion: "initial" }, ref: el => { layer = el; } },
           navigationScope && h("div", { className: "sc-anchor", tabIndex: -1, "aria-hidden": true, ref: el => { scopeAnchor = el; } }),
           h(FocusCue),
+          navigating && prefix === "g" && !navigationScope && !activePanel() && h(TabBadges),
           navigating && (hints || (prefix && prefixShown) || entryHint) && h("section", { className: "sc-panel", "aria-label": "快捷模式提示",
             onPointerMove: hoverMove, onFocusCapture: pauseHint,
             onPointerLeave: event => { hoverPoint = undefined; if (!event.currentTarget.contains(document.activeElement)) resumeHint(); },
             onBlurCapture: event => { if (!event.currentTarget.contains(event.relatedTarget) && !event.currentTarget.matches(":hover")) resumeHint(); } },
-            h("header", { className: "sc-panel-header" }, h("span", { className: "sc-panel-title" }, h("span", { className: "sc-dot", "aria-hidden": true }), prefix === "g" ? "跳转" : "快捷"), h("span", { className: "sc-muted" }, surfaceLabel()),
+            h("header", { className: "sc-panel-header" }, h("span", { className: "sc-panel-title" }, h("span", { className: "sc-dot", "aria-hidden": true }), prefix === "g" ? "跳转" : prefix === "n" ? "新建" : "快捷"), h("span", { className: "sc-muted" }, surfaceLabel()),
               h("button", { type: "button", className: "sc-icon-button", "aria-label": "Shortcutter 设置", title: "Shortcutter 设置", onPointerDown: keepFocus, onClick: () => run("pluginSettings") }, "⚙")),
-            h("div", { className: "sc-grid" }, items.map(c => h("button", { type: "button", className: "sc-key-row", key: c.id, "data-sc-command": c.id, onPointerDown: keepFocus, onClick: () => run(c.id) }, h("span", { className: "sc-keys" }, keyCaps(prefix ? config.bindings[c.id].split(" ")[1] : config.bindings[c.id])), h("span", null, c.id === "closeTab" ? (navigationScope ? "关闭设置" : activePanel() ? "关闭当前页面" : "关闭当前工具标签") : c.label)))),
-            !prefix && h("div", { className: "sc-prefix-row" }, [ ["g", "跳转"] ].map(([key, label]) => h("button", { type: "button", key, onPointerDown: keepFocus, onClick: () => { clearHint(); enterPrefix(key, true); hints = false; focusScopeAnchor(navigationScope).focus({ preventScroll: true }); publish(); } }, h("span", { className: "sc-keys" }, keyCaps(key)), label, h("span", { className: "sc-chevron", "aria-hidden": true }, "›")))),
-            h("footer", { className: "sc-panel-footer" }, h("span", null, prefix ? "依次按键" : navigationScope ? "设置内 Esc 回到快捷模式或关闭" : area === "sidebar" ? "侧栏内 Esc 回到快捷模式" : area === "conversation" ? (activePanel() ? "页内 Esc 回到快捷模式" : "对话内 Esc 回到快捷模式") : `${returnLabel()} 回到快捷模式`), h("span", null, "esc ", prefix ? "返回" : "收起"))));
+            h("div", { className: "sc-grid" },
+              items.map(c => h("button", { type: "button", className: "sc-key-row", key: c.id, "data-sc-command": c.id, onPointerDown: keepFocus, onClick: () => run(c.id) }, h("span", { className: "sc-keys" }, keyCaps(prefix ? config.bindings[c.id].split(" ")[1] : config.bindings[c.id])), h("span", null, c.id === "closeTab" ? (navigationScope ? "关闭设置" : activePanel() ? "关闭当前页面" : "关闭当前工具标签") : c.label))),
+              gTabCount > 0 && h("button", { type: "button", className: "sc-key-row", key: "tab-digits", "data-sc-command": "tab:0", onPointerDown: keepFocus, onClick: () => run("tab:0") }, h("span", { className: "sc-keys" }, keyCaps(gTabCount > 1 ? `1-${gTabCount}` : "1")), h("span", null, "切换工具标签"))),
+            !prefix && h("div", { className: "sc-prefix-row" }, [ ["n", "新建"], ["g", "跳转"] ].map(([key, label]) => h("button", { type: "button", key, onPointerDown: keepFocus, onClick: () => { clearHint(); enterPrefix(key, true); hints = false; focusScopeAnchor(navigationScope).focus({ preventScroll: true }); publish(); } }, h("span", { className: "sc-keys" }, keyCaps(key)), label, h("span", { className: "sc-chevron", "aria-hidden": true }, "›")))),
+            h("footer", { className: "sc-panel-footer" }, h("span", null, prefix === "n" ? "新建后直接进入输入" : prefix ? "依次按键" : navigationScope ? "设置内 Esc 回到快捷模式或关闭" : area === "sidebar" ? "侧栏内 Esc 回到快捷模式" : area === "conversation" ? (activePanel() ? "页内 Esc 回到快捷模式" : "对话内 Esc 回到快捷模式") : `${returnLabel()} 回到快捷模式`), h("span", null, "esc ", prefix ? "返回" : "收起"))));
         return h("div", { className: "sc-root", ref: el => { root = el; }, "data-sc-navigation": navigating ? "true" : "false", "data-sc-area": surfaceArea(), "data-sc-prefix": prefix },
           h("div", { id: "sc-navigation-anchor", ref: el => { anchor = el; }, className: "sc-anchor", tabIndex: -1, role: "group", "aria-label": `快捷模式，按 ? 显示快捷键，${config.bindings.enter || "点击"}进入内容` }),
           // shell.overlay is below fullscreen tools (20 vs 40). Keep our anchor
@@ -731,6 +992,7 @@ window.__ModuleLoader__.load({
           // cues and on-demand help outside its stacking context. Settings still
           // need their own modal top layer.
           createPortal(overlay, navigationScope || document.body),
+          searchRequest && h(SessionSearch, { key: searchRequest.id, request: searchRequest }),
           !navigating && !available && h("button", { type: "button", className: "sc-peek", onClick: () => take(undefined, true, null, true) }, "回到快捷模式"),
           notice && h("div", { role: "status", className: "sc-notice" }, notice));
       }
@@ -806,6 +1068,7 @@ window.__ModuleLoader__.load({
         else { prefix = ""; clearPrefixTimers(); }
         hints = result.toggleHints ? !hints : false;
         if (result.command) run(result.command);
+        else if (result.tabIndex !== undefined) run(`tab:${result.tabIndex}`);
         publish();
       }), "shortcutter.local-keys");
       ctx.effect(() => {
@@ -820,8 +1083,16 @@ window.__ModuleLoader__.load({
           if (seenSession && id === mountedSession) return;
           seenSession = true; mountedSession = id;
           if (lastSession && id && id !== lastSession) previousSession = lastSession;
-          if (id) lastSession = id;
-          if (!pending?.toolTarget || pending.session !== id) {
+          if (id) { lastSession = id; sessionHistory = [id, ...sessionHistory.filter(item => item !== id)].slice(0, 100); }
+          if (pending?.selectSession && !id) return;
+          if (pending?.selectSession === id && id) {
+            pending = { ...pending, session: id, awaitSessionChange: false };
+            area = "conversation"; target = undefined; publish();
+          } else if (pending?.enter === "conversation" && id) {
+            pending = { ...pending, session: id, awaitSessionChange: false };
+            area = "conversation"; target = undefined;
+            publish();
+          } else if (!pending?.toolTarget || pending.session !== id) {
             area = "conversation"; target = undefined;
             requestNavigation();
           }
@@ -837,7 +1108,7 @@ window.__ModuleLoader__.load({
           if (panel === lastPanel) return;
           lastPanel = panel;
           area = "conversation"; target = undefined;
-          requestNavigation();
+          if (!pending?.enter && !pending?.selectSession) requestNavigation();
           publish();
         });
       }, "shortcutter.panel");
@@ -962,10 +1233,25 @@ window.__ModuleLoader__.load({
           else storageError = loaded.error;
           prefix = ""; hints = false; clearHint(); cancelPending(); navigationObserver.refresh(); publish();
         };
+        const submitted = event => {
+          const form = event.target;
+          if (!(form instanceof HTMLFormElement) || !config.autoNavigate) return;
+          const pane = form.closest("[data-dockkit-pane]");
+          const captured = pane && ctx.sidebarRight.focusedTarget(form);
+          if (!pane || !captured || tabs().find(t => t.tabId === captured.tabId)?.kind !== "browser") return;
+          if (!form.contains(document.activeElement)) return;
+          setTimeout(() => {
+            if (!alive || !config.autoNavigate || !pane.isConnected) return;
+            if (pane.querySelector('[role="alert"]') || !form.contains(document.activeElement)) return;
+            if (ctx.sidebarRight.active()?.id !== captured.tabId) return;
+            take(undefined, true);
+          }, 0);
+        };
         document.addEventListener("keydown", trackModifier, true);
         document.addEventListener("keyup", trackModifier, true);
         document.addEventListener("compositionstart", guardCompositionReset, true);
         document.addEventListener("compositionend", guardCompositionReset, true);
+        document.addEventListener("submit", submitted);
         document.body.addEventListener("keydown", bodyEscape);
         document.addEventListener("keydown", modalEscape, true);
         document.addEventListener("pointerdown", pointer, true);
@@ -997,6 +1283,7 @@ window.__ModuleLoader__.load({
           document.removeEventListener("keyup", trackModifier, true);
           document.removeEventListener("compositionstart", guardCompositionReset, true);
           document.removeEventListener("compositionend", guardCompositionReset, true);
+          document.removeEventListener("submit", submitted);
           document.body.removeEventListener("keydown", bodyEscape);
           document.removeEventListener("keydown", modalEscape, true); document.removeEventListener("pointerdown", pointer, true);
           window.removeEventListener("focus", activate); window.removeEventListener("blur", blur); window.removeEventListener("storage", storage);

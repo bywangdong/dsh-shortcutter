@@ -12,6 +12,7 @@ export function isNavigationContent(element) {
 }
 
 export function nativeNavigationKey(element, code) {
+  if (code === 'Tab') return !!element?.closest?.('dialog, [aria-modal="true"], .sc-panel, .sc-preferences');
   // Space activates buttons/checks and is a prefix only on ordinary surfaces.
   if (code !== 'Space') return false;
   return !!element?.closest?.('button, input, select, a[href], summary, [role="button"], [role="checkbox"], [role="radio"], [role="switch"], [role="tab"], [role="slider"], [role="treeitem"]');

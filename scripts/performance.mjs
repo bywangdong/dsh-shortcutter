@@ -43,6 +43,7 @@ async function assemble(read) {
   const files = await Promise.all(sourceFiles.map(read));
   let source = files[0];
   for (const [i, marker] of ['CORE', 'NAVIGATION', 'TOOLS', 'TOOL_NAVIGATION'].entries()) source = source.replace(`/* BUILD_${marker} */`, files[i + 1].replace(/^export /gm, ''));
+  if (source.includes('/* BUILD_SESSION_SEARCH */')) source = source.replace('/* BUILD_SESSION_SEARCH */', (await read('src/session-search.js')).replace(/^export /gm, ''));
   return source.replace('/* BUILD_CSS */', `const STYLE = ${JSON.stringify(files[5])};`);
 }
 const candidate = await assemble(file => fs.readFile(path.join(candidateRoot, file), 'utf8'));
