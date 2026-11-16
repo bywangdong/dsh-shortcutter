@@ -33,11 +33,11 @@ DSH 桌面端的单键快捷插件（界面名称 **Shortcutter**）。通过**�
 
 ## 安装与卸载
 
-在 DSH **插件** 页面添加 `git+https://github.com/iobee/dsh-shortcutter.git#main`，或通过桌面应用自带 CLI 安装：
+在 DSH **插件** 页面添加 `git+https://github.com/bywangdong/dsh-shortcutter.git#main`，或通过桌面应用自带 CLI 安装：
 
 ```sh
 "/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh" \
-  plugin --profile desktop add 'git+https://github.com/iobee/dsh-shortcutter.git#main'
+  plugin --profile desktop add 'git+https://github.com/bywangdong/dsh-shortcutter.git#main'
 ```
 
 首次 Git 安装若提示 `ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`，按提示将该包键写入对应 profile `pnpm-workspace.yaml` 的 `allowBuilds` 后重试；或使用本地预构建包免脚本安装：
