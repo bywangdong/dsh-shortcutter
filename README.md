@@ -1,4 +1,4 @@
-# DSH Shortcutter · 0.1.40
+# DSH Shortcutter · 0.1.41
 
 DSH 桌面端的单键快捷插件（界面名称 **Shortcutter**）。通过**快捷模式**用左手键位切换区域、新建并直接输入、切换工具标签与全局页面，支持中文输入法下直接按键，不修改或替换宿主原有交互。
 
@@ -45,7 +45,7 @@ DSH 桌面端的单键快捷插件（界面名称 **Shortcutter**）。通过**�
 ```sh
 npm run pack:local
 "/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh" \
-  plugin --profile desktop add ./dist/dsh-shortcutter-0.1.40.tgz --offline --ignore-scripts
+  plugin --profile desktop add ./dist/dsh-shortcutter-0.1.41.tgz --offline --ignore-scripts
 ```
 
 卸载可在 DSH **插件** 页面操作，或运行：
