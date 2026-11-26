@@ -9,7 +9,8 @@ body{margin:0}#frame{display:flex;height:800px}#sidebar{width:200px}#conversatio
 body>:not(#frame){-webkit-app-region:no-drag}
 </style><div id="frame"><aside id="sidebar">Sessions</aside><main id="conversation"><input id="composer" value="draft"><button id="ordinary">Ordinary button</button><div id="log"></div></main><aside id="right" data-rightbar-col data-sidebar-right-open="true"><div data-sidebar-right-session="s1" data-sidebar-right-panel="dock"><div data-dockkit-strip></div><div data-dockkit-pane="p1"></div></div></aside><div data-shell-overlay id="overlay"></div></div>`;
 
-export function setup({ instrument = false, openState = 'open', nodes = 2000, autoFullscreen = false,
+export function setup({ instrument = false, openState = 'open', nodes = 2000, autoFullscreen = false, legacySettingsSections = false,
+  hasSessionStatus = true, toolMountDelay = 0,
   initialTabs = [{ sessionId: 's1', tabId: 'b1', kind: 'browser' }], activeTabId = initialTabs[0]?.tabId } = {}) {
   window.counts = {};
   window.count = key => { window.counts[key] = (window.counts[key] || 0) + 1; };
@@ -38,6 +39,7 @@ export function setup({ instrument = false, openState = 'open', nodes = 2000, au
     { workspaceId: 'project', title: 'Shortcutter', path: '/project', sessionIds: ['s1', 's2'] }
   ] });
   const terminal = store({ writable: false, phase: 'opening' });
+  const sessionStatus = Object.assign(store(new Map()), { readingReady: store(true) });
   const mounted = store('s1');
   const panelInfo = store({ activePanelId: null });
   const availablePanels = new Set(['plugins', 'schedules']);
@@ -138,6 +140,12 @@ export function setup({ instrument = false, openState = 'open', nodes = 2000, au
     }
     if (!dialog.open) dialog.showModal();
   };
+  const settingsShell = {
+    children: { 'settings.trigger': { kind: 'single', scope: 'root' } },
+    store: { create: () => ({ actions: { open: openHostSettings } }) }
+  };
+  // DSH 0.2.3 moved settings.section from the sidebar shell to settings.section.view.
+  if (legacySettingsSections) settingsShell.children['settings.section'] = { kind: 'list', scope: 'root' };
   const sidebarRight = {
     mounted, openTabs, active, isExpanded: () => expanded, commandTarget: () => target(),
     isTargetCurrent: captured => captured.sessionId === mounted.getSnapshot() && captured.tabId === currentId
@@ -148,7 +156,9 @@ export function setup({ instrument = false, openState = 'open', nodes = 2000, au
       do { currentId = kind[0] + (++serial); } while (openTabs.getSnapshot().some(tab => tab.tabId === currentId));
       occurrence = {}; navigationRevision++;
       openTabs.set([...openTabs.getSnapshot(), { sessionId: mounted.getSnapshot(), tabId: currentId, kind }]);
-      expanded = true; renderTool(); renderPresentation();
+      expanded = true;
+      if (toolMountDelay) setTimeout(renderTool, toolMountDelay); else renderTool();
+      renderPresentation();
     },
     toggleExpanded() {
       expanded = !expanded;
@@ -173,13 +183,13 @@ export function setup({ instrument = false, openState = 'open', nodes = 2000, au
   };
   const ctx = {
     effect(fn) { cleanups.push(fn()); },
+    inject(names, fn) { if (hasSessionStatus && names.includes('uiSession.sessionStatus')) fn(ctx); },
+    uiSession: { sessionStatus },
     get(name) { return name === 'pluginNavigation' ? pluginNavigation : undefined; },
     slots: {
       inject(_name, fn) { return fn(); },
       entriesOfSlot(name) {
-        return name === 'sidebar.settings'
-          ? [{ children: { 'settings.section': [] }, store: { create: () => ({ actions: { open: openHostSettings } }) } }]
-          : [];
+        return name === 'sidebar.settings' ? [settingsShell] : [];
       },
       register(spec, Component) {
         registeredSlots.push(spec.key ? `${spec.name}:${spec.key}` : `${spec.name}:${spec.id}`);
@@ -236,7 +246,7 @@ export function setup({ instrument = false, openState = 'open', nodes = 2000, au
     document.addEventListener(type, () => window.fixedInput?.({ type: 'reset' }), true);
   }
   window.fixture = {
-    session, sessionList, workspaceList, terminal, sidebarRight, panelInfo, availablePanels, layout: ctx.layout, emitKey, native, catalog, shortcutConfig, workspace, commands, registeredSlots, pluginNavigation,
+    session, sessionList, workspaceList, sessionStatus, terminal, sidebarRight, panelInfo, availablePanels, layout: ctx.layout, emitKey, native, catalog, shortcutConfig, workspace, commands, registeredSlots, pluginNavigation,
     commitSession(id, openState = 'loading') {
       selectedSession = id; session.set({ openState, running: false }); selectPanel(null);
     },

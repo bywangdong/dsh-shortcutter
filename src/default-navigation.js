@@ -38,7 +38,8 @@ export function readNavigationContext(doc, { enabled = true, composing = false, 
     : isNavigationContent(active) ? 'content'
     : isNavigationInput(active) ? 'input'
     : !enabled ? 'disabled' : 'navigation';
-  return { navigating: reason === 'navigation', reason, active, scope };
+  return { navigating: reason === 'navigation', reason, active, scope,
+    sidebarDrawer: top?.matches('[data-shortcut-modal="sidebar"]') ? top : null };
 }
 
 export function observeNavigationContext(doc, { read, changed, ignore = () => false }) {

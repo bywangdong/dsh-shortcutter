@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { sessionSearchRows } from '../src/session-search.js';
+import { indexSessionRows, sessionSearchRows } from '../src/session-search.js';
 
 const fixtures = () => ({
   sessions: { phase: 'ready', ids: ['a', 'b', 'c', 'archived', 'child', 'blank', 'fork', 'missing'], byId: {
@@ -24,13 +24,25 @@ test('only openable host-catalog sessions appear; real forks remain, blank and s
 });
 test('Chinese, case, full-width letters, and multiple title/workspace terms match literal metadata',()=>{
   const {sessions,workspaces}=fixtures();
-  const search=query=>sessionSearchRows(sessions,workspaces,{query});
+  const search=indexSessionRows(sessionSearchRows(sessions,workspaces));
   assert.deepEqual(search('  ＳＨＯＲＴＣＵＴＴＥＲ  中文 ').map(row=>row.id),['a']);
   assert.deepEqual(search('KEYBOARD').map(row=>row.id),['b']);
   assert.equal(search('wrong').length,0,'Workspace membership wins over the cwd fallback');
   assert.equal(search('navigation')[0].workspace,'Browser');
   assert.equal(search('[.*]').length,0,'Queries are not regular expressions');
   assert.equal(search('<img')[0].title,'<img onerror=alert(1)>','HTML remains text for React to escape');
+});
+test('fuzzy title and workspace matching ranks direct hits first and preserves recency on ties', () => {
+  const rows = [
+    { id: 'project', title: '会话搜索设置', workspace: 'ProxyTool' },
+    { id: 'title', title: 'ProxyTool', workspace: 'work' },
+    { id: 'prefix', title: 'pt notes', workspace: 'work' }
+  ];
+  const search = indexSessionRows(rows);
+  assert.deepEqual(search('  '), rows);
+  assert.deepEqual(search('pt').map(row => [row.id, row.workspaceMatch]), [['prefix', false], ['project', true], ['title', false]]);
+  assert.deepEqual(search('搜设').map(row => row.id), ['project']);
+  assert.deepEqual(search('搜设 pt').map(row => [row.id, row.workspaceMatch]), [['project', true]]);
 });
 test('recent visits lead, remaining rows use update time, and search never mutates stores',()=>{
   const {sessions,workspaces}=fixtures();
@@ -45,7 +57,7 @@ test('incomplete archive/catalog snapshots yield no unsafe early results, and li
   assert.deepEqual(sessionSearchRows({...sessions,phase:'pending'},workspaces),[]);
   assert.deepEqual(sessionSearchRows(sessions,{...workspaces,phase:'pending'}),[]);
   workspaces.archivedSessionIds.push('a');
-  assert.equal(sessionSearchRows(sessions,workspaces,{query:'中文'}).length,0);
+  assert.equal(indexSessionRows(sessionSearchRows(sessions,workspaces))('中文').length,0);
   sessions.byId.b={...sessions.byId.b,displayTitle:'Renamed'};
-  assert.equal(sessionSearchRows(sessions,workspaces,{query:'navigation'}).length,0);
+  assert.equal(indexSessionRows(sessionSearchRows(sessions,workspaces))('navigation').length,0);
 });

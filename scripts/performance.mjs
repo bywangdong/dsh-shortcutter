@@ -10,6 +10,7 @@ import { createHash } from 'node:crypto';
 import assert from 'node:assert/strict';
 import { html, setup } from '../test/browser/host-fixture.mjs';
 import { pluginChecks } from '../test/browser/plugin-checks.mjs';
+import { assembleClient as assemble } from './client-source.mjs';
 const root = fileURLToPath(new URL('../', import.meta.url));
 const args = {};
 for (let i = 2; i < process.argv.length; i++) {
@@ -38,14 +39,6 @@ const candidateRoot = path.resolve(args.candidate || root);
 const baselineRoot = path.resolve(args['baseline-root'] || root);
 const baselineRef = args['baseline-ref'] || 'HEAD';
 const git = (...gitArgs) => execFileSync('git', ['-C', baselineRoot, ...gitArgs], { encoding: 'utf8' });
-const sourceFiles = ['src/client.js', 'src/core.js', 'src/default-navigation.js', 'src/tool-tabs.js', 'src/tool-navigation.js', 'src/styles.css'];
-async function assemble(read) {
-  const files = await Promise.all(sourceFiles.map(read));
-  let source = files[0];
-  for (const [i, marker] of ['CORE', 'NAVIGATION', 'TOOLS', 'TOOL_NAVIGATION'].entries()) source = source.replace(`/* BUILD_${marker} */`, files[i + 1].replace(/^export /gm, ''));
-  if (source.includes('/* BUILD_SESSION_SEARCH */')) source = source.replace('/* BUILD_SESSION_SEARCH */', (await read('src/session-search.js')).replace(/^export /gm, ''));
-  return source.replace('/* BUILD_CSS */', `const STYLE = ${JSON.stringify(files[5])};`);
-}
 const candidate = await assemble(file => fs.readFile(path.join(candidateRoot, file), 'utf8'));
 const baseline = args['checks-only'] ? undefined : await assemble(file => git('show', `${baselineRef}:${file}`));
 function instrument(source) {

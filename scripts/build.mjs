@@ -1,14 +1,9 @@
 import fs from 'node:fs/promises';
+import { assembleClient } from './client-source.mjs';
 const root = new URL('../', import.meta.url);
-const [core, navigation, tools, toolNavigation, client, css, sessionSearch] = await Promise.all(['src/core.js','src/default-navigation.js','src/tool-tabs.js','src/tool-navigation.js','src/client.js','src/styles.css','src/session-search.js'].map(p => fs.readFile(new URL(p,root),'utf8')));
+const body = await assembleClient(file => fs.readFile(new URL(file, root), 'utf8'));
 await fs.mkdir(new URL('lib/',root),{recursive:true});
 await fs.mkdir(new URL('dist/',root),{recursive:true});
-const body = client.replace('/* BUILD_CORE */',core.replace(/^export /gm,''))
-  .replace('/* BUILD_NAVIGATION */',navigation.replace(/^export /gm,''))
-  .replace('/* BUILD_TOOLS */',tools.replace(/^export /gm,''))
-  .replace('/* BUILD_TOOL_NAVIGATION */',toolNavigation.replace(/^export /gm,''))
-  .replace('/* BUILD_SESSION_SEARCH */',sessionSearch.replace(/^export /gm,''))
-  .replace('/* BUILD_CSS */',`const STYLE = ${JSON.stringify(css)};`);
 async function writeAtomic(path, text) {
   const target = new URL(path,root);
   if (await fs.readFile(target,'utf8').catch(()=>null) === text) return;

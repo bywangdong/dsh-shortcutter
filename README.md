@@ -1,4 +1,4 @@
-# DSH Shortcutter · 0.1.41
+# DSH Shortcutter · 0.1.43
 
 DSH 桌面端的单键快捷插件（界面名称 **Shortcutter**）。通过**快捷模式**用左手键位切换区域、新建并直接输入、切换工具标签与全局页面，支持中文输入法下直接按键，不修改或替换宿主原有交互。
 
@@ -27,7 +27,9 @@ DSH 桌面端的单键快捷插件（界面名称 **Shortcutter**）。通过**�
 | `g e` / `g a` / `g s` | 打开插件 / 定时任务 / DSH 设置 |
 | `?` | 展开 / 收起键位提示 |
 
-会话搜索默认优先显示本次窗口内最近访问的会话，其余按更新时间排列；不显示已归档会话、子代理会话和非当前的空白会话。只搜索会话名称和工作区，不读取消息正文。搜索期间不切换会话，按 `Enter` 或点击结果才打开，草稿仍由 DSH 保留。升级会自动补上 `f`；若 `f` 已有自定义用途，会保留原绑定，并在插件设置中提示为“搜索会话”另设键位。
+会话搜索在关键词为空时优先显示本窗口最近访问的会话。输入后按标题和工作区的模糊匹配程度排序，例如输入 `pt` 能找到 `ProxyTool`，输入“搜设”能找到“会话搜索设置”。结果仅包含可打开的会话，已归档、子代理和其他空白会话会被过滤。
+
+在支持会话状态的 DSH 中，可切换「全部」「待处理」「未读」。在搜索框按 `Tab` 进入筛选，用 `←` / `→` 切换，`↑` / `↓` 选择结果。按 `Enter` 或点击结果才打开会话，浏览列表会保留草稿和未读状态。若 `f` 已有自定义用途，可以在插件设置中为搜索另设键位。
 
 > **macOS 提示**：若将回到快捷模式手动改为 `⌘ Esc` 且无响应，通常是 macOS“游戏叠层”占用了系统快捷键（可在 **系统设置 → 键盘 → 键盘快捷键… → 调度中心** 中关闭“游戏叠层”，或直接使用默认的 `⌥ Esc` / `⌃ Esc`）。
 
@@ -45,7 +47,7 @@ DSH 桌面端的单键快捷插件（界面名称 **Shortcutter**）。通过**�
 ```sh
 npm run pack:local
 "/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh" \
-  plugin --profile desktop add ./dist/dsh-shortcutter-0.1.41.tgz --offline --ignore-scripts
+  plugin --profile desktop add ./dist/dsh-shortcutter-0.1.43.tgz --offline --ignore-scripts
 ```
 
 卸载可在 DSH **插件** 页面操作，或运行：

@@ -38,12 +38,14 @@ export async function pluginChecks(createPage) {
     await key(page, 'KeyF'); await page.getByRole('combobox').waitFor();
     assert.equal(await page.getByRole('dialog', { name: '搜索会话' }).count(), 1);
     assert.equal(await page.getByRole('combobox').evaluate(el => el === document.activeElement), true);
-    for (const tab of ['Tab', 'Shift+Tab']) {
-      await page.keyboard.press(tab);
-      assert.equal(await page.getByRole('button', { name: '关闭搜索' }).evaluate(el => el === document.activeElement), true);
-      await page.keyboard.press(tab);
-      assert.equal(await page.getByRole('combobox').evaluate(el => el === document.activeElement), true);
-    }
+    await page.keyboard.press('Tab');
+    assert.equal(await page.getByRole('radio', { name: '全部' }).evaluate(el => el === document.activeElement), true);
+    await page.keyboard.press('Tab');
+    assert.equal(await page.getByRole('button', { name: '关闭搜索' }).evaluate(el => el === document.activeElement), true);
+    await page.keyboard.press('Tab');
+    assert.equal(await page.getByRole('combobox').evaluate(el => el === document.activeElement), true);
+    await page.keyboard.press('Shift+Tab');
+    assert.equal(await page.getByRole('button', { name: '关闭搜索' }).evaluate(el => el === document.activeElement), true);
     assert.equal(await page.getByRole('option').count(), 3);
     assert.deepEqual(await page.evaluate(() => window.fixture.workspace.openedSessions), []);
     await page.getByRole('combobox').fill('中文');
@@ -54,6 +56,72 @@ export async function pluginChecks(createPage) {
     assert.equal(await page.locator('#composer').inputValue(), 'draft');
     assert.equal(await page.evaluate(() => window.fixture.sessionList.listenerCount()), 0);
     assert.equal(await page.evaluate(() => window.fixture.workspaceList.listenerCount()), 0);
+  });
+  await check('live status filters are keyboard accessible and only opening a result changes the session', async page => {
+    await ready(page);
+    await page.evaluate(() => window.fixture.sessionStatus.set(new Map([
+      ['s2', { pendingInteraction: { kind: 'approval' }, completionUnread: true }],
+      ['s3', { pendingInteraction: { kind: 'question' } }]
+    ])));
+    await key(page, 'KeyF'); await page.getByRole('combobox').waitFor();
+    await page.keyboard.press('Tab'); await page.keyboard.press('ArrowRight');
+    assert.equal(await page.getByRole('radio', { name: '待处理' }).isChecked(), true);
+    assert.equal(await page.getByRole('option').count(), 2);
+    assert.match(await page.getByRole('option').first().textContent(), /待审批.*未读/);
+    await page.keyboard.press('ArrowRight');
+    assert.equal(await page.getByRole('option').count(), 1);
+    await page.evaluate(() => window.fixture.sessionStatus.set(new Map()));
+    await page.getByText('没有未读会话。').waitFor();
+    await page.evaluate(() => window.fixture.sessionStatus.readingReady.set(false));
+    assert.equal(await page.getByRole('radio', { name: '未读' }).isDisabled(), true);
+    assert.equal(await page.getByRole('radio', { name: '全部' }).isChecked(), true);
+    assert.deepEqual(await page.evaluate(() => window.fixture.workspace.openedSessions), []);
+    await page.keyboard.press('Escape');
+    assert.equal(await page.evaluate(() => window.fixture.sessionStatus.listenerCount()), 0);
+  });
+  await check('fuzzy search works without a status service on older hosts', async page => {
+    await ready(page); await key(page, 'KeyF');
+    await page.getByRole('combobox').fill('中修');
+    assert.equal(await page.getByRole('option').count(), 1);
+    assert.equal(await page.getByRole('radio').count(), 0);
+  }, { hasSessionStatus: false });
+  await check('creating a second browser tab waits for its own address bar', async page => {
+    await ready(page); await key(page, 'KeyN'); await key(page, 'KeyB');
+    await page.waitForFunction(() => document.activeElement.id === 'address' && document.activeElement.closest('[data-sidebar-right-tab]').dataset.sidebarRightTab !== 'b1');
+    await page.keyboard.type('example');
+    assert.equal(await page.locator('#address').inputValue(), 'example');
+  }, { toolMountDelay: 100 });
+  await check('the host dismisses its conversation overlay on the first Escape', async page => {
+    await ready(page); await page.evaluate(() => {
+      const panel = document.createElement('aside'); panel.dataset.sessionPanel = 'overlay'; panel.textContent = 'Session panel'; document.body.append(panel);
+      document.addEventListener('keydown', event => { if (event.key === 'Escape' && !event.defaultPrevented) panel.remove(); }, { once: true });
+    });
+    await page.keyboard.press('Escape');
+    assert.equal(await page.locator('[data-session-panel="overlay"]').count(), 0);
+  });
+  await check('only the configured sidebar toggle runs inside the drawer, outside editable controls', async page => {
+    await ready(page);
+    await page.evaluate(() => {
+      window.fixture.preferences();
+    });
+    await page.getByLabel('切换侧栏', { exact: true }).fill('n s');
+    await page.getByRole('button', { name: '保存设置', exact: true }).click();
+    await page.evaluate(() => {
+      window.fixture.layout.selectPanel(null);
+      const drawer = document.createElement('div');
+      drawer.setAttribute('role', 'dialog'); drawer.setAttribute('aria-modal', 'true'); drawer.dataset.shortcutModal = 'sidebar';
+      drawer.innerHTML = '<button id="drawer-toggle">Toggle</button><input id="drawer-search">';
+      document.body.append(drawer);
+      window.fixture.layout.toggleSidebar = () => drawer.remove();
+      drawer.querySelector('input').focus();
+    });
+    assert.equal(await key(page, 'KeyN'), false, 'the drawer search owns typing');
+    await page.locator('#drawer-toggle').focus();
+    assert.equal(await key(page, 'KeyS'), false);
+    assert.equal(await key(page, 'KeyF'), false);
+    assert.equal(await key(page, 'KeyN'), true);
+    assert.equal(await key(page, 'KeyS'), true);
+    assert.equal(await page.locator('[data-shortcut-modal="sidebar"]').count(), 0);
   });
   await check('session search supports arrows, clicks, empty results, and Esc restores the originating tool', async page => {
     await ready(page); await key(page, 'KeyB'); await ready(page);
@@ -575,8 +643,20 @@ export async function pluginChecks(createPage) {
     await page.evaluate(() => window.fixture.preferences());
     await page.getByRole('button', { name: '自定义…', exact: true }).click();
     await page.getByLabel('录制回到快捷模式快捷键').dispatchEvent('keydown', { key: ':', code: 'Semicolon', metaKey: true, shiftKey: true });
+    await page.getByLabel('录制回到快捷模式快捷键').dispatchEvent('keyup', { key: ':', code: 'Semicolon', metaKey: true, shiftKey: true });
     await page.getByRole('button', { name: '保存组合', exact: true }).click(); await settle(page);
     assert.deepEqual(await bindingOf(page), { code: 'Semicolon', modifiers: ['meta', 'shift'] });
+  });
+  await check('two held physical keys are recorded and never indicated as a single-key preset', async page => {
+    await page.evaluate(() => window.fixture.preferences());
+    await page.getByRole('button', { name: '自定义…', exact: true }).click();
+    await page.getByLabel('录制回到快捷模式快捷键').focus();
+    await page.keyboard.down('Alt'); await page.keyboard.down('Escape'); await page.keyboard.press('j');
+    await page.keyboard.up('Escape'); await page.keyboard.up('Alt');
+    await page.getByRole('button', { name: '保存组合', exact: true }).click(); await settle(page);
+    assert.deepEqual(await bindingOf(page), { code: 'Escape', secondCode: 'KeyJ', modifiers: ['alt'] });
+    assert.equal(await page.getByRole('button', { name: '⌥ Esc（默认）', exact: true }).getAttribute('aria-pressed'), 'false');
+    assert.equal(await page.getByRole('button', { name: '自定义…', exact: true }).getAttribute('aria-pressed'), 'true');
   });
   await check('conflicts, concurrent edits and save failures preserve the current shortcut and allow retry', async page => {
     await page.evaluate(() => window.fixture.preferences());
@@ -987,6 +1067,11 @@ export async function pluginChecks(createPage) {
     await key(page, 'KeyC'); await ready(page);
     assert.equal(await page.evaluate(() => window.fixture.panelInfo.getSnapshot().activePanelId), null);
   });
+  await check('g s also opens Settings on hosts where the sidebar shell owns settings.section', async page => {
+    await ready(page);
+    await key(page, 'KeyG'); await key(page, 'KeyS');
+    await page.locator('#host-settings[open]').waitFor();
+  }, { legacySettingsSections: true });
   await check('w closes DSH Settings without touching background tools, and g b preserves session history across global pages', async page => {
     await ready(page);
     await key(page, 'KeyG'); await key(page, 'KeyS'); await settle(page);

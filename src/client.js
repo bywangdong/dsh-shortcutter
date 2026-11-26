@@ -20,12 +20,13 @@ window.__ModuleLoader__.load({
     const HINT_RESUME_MS = 800;
     const PREFIX_TIMEOUT_MS = 4000;
     const DEFAULT_RETURN_BINDING = { code: "Escape", modifiers: ["alt"] };
+    const pendingLabels = new Map([["approval", "待审批"], ["plan-review", "待审方案"], ["question", "待回答"]]);
     const RETURN_PRESETS = [
       { key: "default", label: "⌥ Esc（默认）", reset: true, binding: DEFAULT_RETURN_BINDING },
       { key: "control", label: "⌃ Esc", reset: false, binding: { code: "Escape", modifiers: ["control"] } }
     ];
     const normalizeModifier = modifier => modifier === "primary" ? "meta" : modifier;
-    const sameBinding = (a, b) => !!a && !!b && a.code === b.code
+    const sameBinding = (a, b) => !!a && !!b && a.code === b.code && a.secondCode === b.secondCode
       && (a.modifiers?.length || 0) === (b.modifiers?.length || 0)
       && (a.modifiers || []).map(normalizeModifier).every(m => (b.modifiers || []).map(normalizeModifier).includes(m));
 
@@ -37,7 +38,7 @@ window.__ModuleLoader__.load({
       let prefixShown = false, prefixToken = 0, prefixShowTimer, prefixExpireTimer;
       let firstNavigation = true, seenSession = false, inputReset = 0, resetTimer;
       let lastSession, previousSession, notice = "", noticeTimer, returnElement;
-      let searchRequest, searchDialog, sessionHistory = [];
+      let searchRequest, searchDialog, sessionStatus, sessionHistory = [];
       let raw = null, storageError = "", config = defaultConfig(), stopRecording = () => {};
       const listeners = new Set();
       const toolHistory = createToolTabHistory();
@@ -183,6 +184,7 @@ window.__ModuleLoader__.load({
         if (isNavigationContent(targetEl) || targetEl.closest('[data-approval-key], iframe, webview, .xterm, [inert]')) return false;
         const context = navigationObserver?.refresh() || navigationContext();
         if (["menu", "modal", "inactive", "composition"].includes(context.reason)) return false;
+        if (!context.scope && [...document.querySelectorAll('[data-session-panel="overlay"]')].some(visible)) return false;
         if (context.scope) {
           if (context.reason === "input") {
             prevent(); stop();
@@ -242,9 +244,13 @@ window.__ModuleLoader__.load({
         }, 5000);
         publish();
       };
-      const inPaneTarget = (captured, el) => visible(el)
-        && el.closest("[data-dockkit-pane]")?.getAttribute("data-dockkit-pane") === captured?.paneId
-        && el.closest("[data-sidebar-right-session]")?.getAttribute("data-sidebar-right-session") === captured?.sessionId;
+      const inPaneTarget = (captured, el) => {
+        if (!captured?.tabId || !visible(el) || el.closest("[data-sidebar-right-tab]")?.dataset.sidebarRightTab !== captured.tabId) return false;
+        const owner = ctx.sidebarRight.focusedTarget(el);
+        return owner?.sessionId === captured.sessionId && owner.paneId === captured.paneId && owner.occurrence === captured.occurrence;
+      };
+      const browserAddress = captured => [...document.querySelectorAll("[data-sidebar-right-tab] form input")]
+        .find(el => inPaneTarget(captured, el) && isNavigationInput(el));
       const saveConfig = (candidate, expected) => {
         const result = validateConfig(candidate);
         if (result.error) return result.error;
@@ -282,7 +288,7 @@ window.__ModuleLoader__.load({
         rememberActiveTool();
         if (tool && (!target?.tabId || ctx.sidebarRight.active()?.kind !== kind)) throw new Error("工具尚未准备好，请点击标签进入。");
         if (create && kind === "browser") {
-          const input = [...document.querySelectorAll("[data-dockkit-pane] input")].find(el => inPaneTarget(target, el) && isNavigationInput(el));
+          const input = browserAddress(target);
           if (input) {
             cancelPending(); manualNavigation = false;
             input.focus({ preventScroll: true }); input.select?.();
@@ -351,12 +357,9 @@ window.__ModuleLoader__.load({
         if (navigating) throw new Error("内容尚未准备好，请稍后再试或点击进入。");
       };
       const openSettings = () => {
-        // The settings owner exposes one shared root store on its public slot
-        // entry. Resolve the live owner each time so host reloads stay safe.
-        const owner = ctx.slots.entriesOfSlot("sidebar.settings")
-          .find(entry => entry.children?.["settings.section"]);
-        const store = owner?.store;
-        const actions = store && typeof store !== "function" && store.create().actions;
+        // sidebar.settings is a single slot. Its active shell owns the shared dialog store.
+        const store = ctx.slots.entriesOfSlot("sidebar.settings")[0]?.store;
+        const actions = store?.create?.()?.actions;
         if (typeof actions?.open !== "function") throw new Error("DSH 设置尚未准备好，请稍后重试。");
         cancelPending();
         actions.open();
@@ -530,12 +533,22 @@ window.__ModuleLoader__.load({
       function SessionSearch({ request }) {
         const list = React.useSyncExternalStore(fn => ctx.sessions.list.subscribe(fn), () => ctx.sessions.list.getSnapshot());
         const workspaces = React.useSyncExternalStore(fn => ctx.workspaces.list.subscribe(fn), () => ctx.workspaces.list.getSnapshot());
+        const store = sessionStatus;
+        const statuses = React.useSyncExternalStore(React.useCallback(fn => store?.subscribe(fn) ?? (() => {}), [store]), () => store?.getSnapshot());
+        const readingReady = React.useSyncExternalStore(React.useCallback(fn => store?.readingReady.subscribe(fn) ?? (() => {}), [store]), () => store?.readingReady.getSnapshot() ?? false);
         const [query, setQuery] = React.useState("");
+        const [filter, setFilter] = React.useState("all");
         const [selectedId, setSelectedId] = React.useState();
         const [message, setMessage] = React.useState("");
         const dialogRef = React.useRef(null), inputRef = React.useRef(null), closeRef = React.useRef(null), composing = React.useRef(false);
         const current = mounted() || lastSession;
-        const matches = React.useMemo(() => sessionSearchRows(list, workspaces, { query, current, history: sessionHistory }), [list, workspaces, query, current]);
+        const search = React.useMemo(() => indexSessionRows(sessionSearchRows(list, workspaces, { current, history: sessionHistory })), [list, workspaces, current, sessionHistory]);
+        const hits = React.useMemo(() => search(query), [search, query]);
+        const activeFilter = store && (filter !== "unread" || readingReady) ? filter : "all";
+        const matches = activeFilter === "all" ? hits : hits.filter(row => {
+          const status = statuses?.get(row.id);
+          return activeFilter === "pending" ? !!status?.pendingInteraction : readingReady && status?.completionUnread;
+        });
         const rows = matches.slice(0, 100);
         const selected = rows.find(row => row.id === selectedId) || rows[0];
         const loading = list.phase !== "ready" || workspaces.phase !== "ready";
@@ -571,16 +584,19 @@ window.__ModuleLoader__.load({
             || event.metaKey || event.ctrlKey || event.altKey) return;
           if (event.key === "Tab") {
             event.preventDefault(); event.stopPropagation();
-            (event.target === inputRef.current ? closeRef.current : inputRef.current)?.focus({ preventScroll: true });
+            const controls = [inputRef.current, dialogRef.current.querySelector('input[type="radio"]:checked'), closeRef.current].filter(Boolean);
+            const index = controls.indexOf(event.target);
+            controls[(index + (event.shiftKey ? -1 : 1) + controls.length) % controls.length].focus({ preventScroll: true });
             return;
           }
           if (event.shiftKey) return;
           if (event.key === "Escape") {
             event.preventDefault(); event.stopPropagation(); close();
-          } else if (event.target === inputRef.current && ["ArrowDown", "ArrowUp", "Enter"].includes(event.key)) {
+          } else if ((event.target === inputRef.current || event.target.type === "radio") && ["ArrowDown", "ArrowUp", "Enter"].includes(event.key)) {
             event.preventDefault(); event.stopPropagation();
             if (event.key === "Enter") { if (!event.repeat && selected) choose(selected.id); }
             else if (rows.length) {
+              inputRef.current.focus({ preventScroll: true });
               const index = rows.findIndex(row => row.id === selected?.id);
               setSelectedId(rows[Math.max(0, Math.min(rows.length - 1, index + (event.key === "ArrowDown" ? 1 : -1)))].id);
             }
@@ -601,14 +617,26 @@ window.__ModuleLoader__.load({
               onCompositionStart: () => { composing.current = true; }, onCompositionEnd: () => { composing.current = false; },
               onChange: event => { setQuery(event.target.value); setSelectedId(undefined); setMessage(""); } }),
             h("button", { ref: closeRef, type: "button", "aria-label": "关闭搜索", onClick: close }, "×")),
+          store && h("div", { className: "sc-search-filters", role: "radiogroup", "aria-label": "按会话状态筛选" },
+            [["all", "全部"], ["pending", "待处理"], ["unread", "未读"]].map(([value, label]) =>
+              h("label", { key: value, title: value === "unread" && !readingReady ? "当前无法读取未读状态" : undefined },
+                h("input", { type: "radio", name: "sc-session-filter", value, checked: activeFilter === value, disabled: value === "unread" && !readingReady,
+                onChange: () => { setFilter(value); setSelectedId(undefined); setMessage(""); } }), h("span", null, label)))),
           h("p", { className: "sc-search-status", role: "status" }, message || (loading ? "正在加载会话…" : matches.length
             ? `${query.trim() ? "搜索结果" : "最近访问优先"} · ${matches.length} 个会话${matches.length > rows.length ? "，显示前 100 个，请输入关键词缩小范围" : ""}`
-            : query.trim() ? "没有匹配的会话，试试其他关键词。" : "暂无可搜索的会话。")),
+            : query.trim() ? "没有匹配的会话，试试其他关键词。" : activeFilter === "pending" ? "没有待处理的会话。" : activeFilter === "unread" ? "没有未读会话。" : "暂无可搜索的会话。")),
           h("div", { id: "sc-session-results", className: "sc-search-results", role: "listbox", "aria-label": "会话搜索结果", "aria-busy": loading },
-            rows.map(row => h("button", { key: row.id, id: `sc-session-result-${row.id}`, type: "button", className: "sc-search-result", role: "option",
+            rows.map(row => {
+              const status = statuses?.get(row.id);
+              const pending = status?.pendingInteraction;
+              return h("button", { key: row.id, id: `sc-session-result-${row.id}`, type: "button", className: "sc-search-result", role: "option",
+              "data-sc-workspace-match": row.workspaceMatch,
               "aria-selected": row.id === selected?.id, tabIndex: -1, title: `${row.title}\n${row.workspace}`, onPointerDown: event => event.preventDefault(), onClick: () => choose(row.id) },
               h("span", { className: "sc-search-text" }, h("strong", null, row.title), h("small", null, row.workspace)),
-              h("span", { className: "sc-muted" }, row.current ? "当前" : row.recent ? "最近访问" : "")))),
+              pending && h("span", { className: "sc-search-pending" }, pendingLabels.get(pending.kind) || "待处理"),
+              readingReady && status?.completionUnread && h("span", { className: "sc-search-unread" }, "未读"),
+              h("span", { className: "sc-muted" }, row.current ? "当前" : row.recent ? "最近访问" : ""));
+            })),
           h("footer", { className: "sc-search-footer" }, h("span", null, keyCaps("↑ ↓"), " 选择"), h("span", null, keyCaps("Enter"), " 打开"), h("span", null, keyCaps("Esc"), " 返回"))), document.body);
       }
 
@@ -734,12 +762,13 @@ window.__ModuleLoader__.load({
         const [candidate, setCandidate] = React.useState();
         const [nativeMessage, setNativeMessage] = React.useState("");
         const [busy, setBusy] = React.useState(false);
-        const capture = React.useRef(null), recordingToken = React.useRef(0), nativeRevision = React.useRef();
+        const capture = React.useRef(null), heldBinding = React.useRef(), recordingToken = React.useRef(0), nativeRevision = React.useRef();
         const preferencesLive = React.useRef(false), savingNative = React.useRef(false);
         React.useEffect(() => {
           preferencesLive.current = true;
           let live = true;
           const stop = () => {
+            heldBinding.current = undefined;
             recordingToken.current++;
             if (live) setRecording(false);
             return ctx.shortcuts.recording(false).catch(() => {});
@@ -770,10 +799,15 @@ window.__ModuleLoader__.load({
             return described;
           } catch { setNativeMessage("无法识别这个组合，请换一个。"); }
         };
+        const finishRecording = binding => {
+          heldBinding.current = undefined;
+          const described = describeNative(binding);
+          if (described) { setCandidate(described); setNativeMessage(""); stopRecording(); }
+        };
         const record = event => {
           if (!recording) return;
           event.preventDefault(); event.stopPropagation();
-          if (event.isComposing || event.nativeEvent?.isComposing || /^(Meta|Control|Shift|Alt)$/.test(event.key) || /^(Meta|Control|Shift|Alt)/.test(event.code)) return;
+          if (event.repeat || event.isComposing || event.nativeEvent?.isComposing || /^(Meta|Control|Shift|Alt)/.test(event.code)) return;
           if ((event.key === "Escape" || event.code === "Escape") && !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey) {
             stopRecording(); setNativeMessage("已取消录制"); return;
           }
@@ -783,9 +817,15 @@ window.__ModuleLoader__.load({
           if (event.ctrlKey) modifiers.push("control");
           if (event.altKey) modifiers.push("alt");
           if (event.shiftKey) modifiers.push("shift");
-          const described = describeNative({ code: event.code, modifiers });
-          if (described) {
-            setCandidate(described); setNativeMessage(""); stopRecording();
+          const held = heldBinding.current;
+          if (held && held.code !== event.code && sameBinding(held, { code: held.code, modifiers }))
+            finishRecording({ ...held, secondCode: event.code });
+          else heldBinding.current = { code: event.code, modifiers };
+        };
+        const release = event => {
+          const held = heldBinding.current;
+          if (held && (event.code === held.code || /^(Meta|Control|Shift|Alt)/.test(event.code))) {
+            event.preventDefault(); event.stopPropagation(); finishRecording(held);
           }
         };
         const applyNative = async (operation, freshRevision = false) => {
@@ -822,7 +862,7 @@ window.__ModuleLoader__.load({
         const row = returnRow();
         const state = !row ? "未注册" : !row.binding ? "" : row.conflicts?.length ? "与其他快捷键冲突，未启用" : row.issue ? "不可用" : "";
         const matchedPreset = row?.binding && RETURN_PRESETS.find(preset => sameBinding(row.binding, preset.binding))?.key;
-        const commandEscape = row?.binding?.code === "Escape" && row.binding.modifiers?.length === 1 && ["meta", "primary"].includes(row.binding.modifiers[0]);
+        const commandEscape = !row?.binding?.secondCode && row?.binding?.code === "Escape" && row.binding.modifiers?.length === 1 && ["meta", "primary"].includes(row.binding.modifiers[0]);
         const groups = ["区域", "操作", "跳转"];
         return h("section", { className: "sc-preferences", "aria-label": "Shortcutter 设置" },
           h("div", { className: "sc-settings-body" },
@@ -836,7 +876,8 @@ window.__ModuleLoader__.load({
                 state && h("span", { className: "sc-muted" }, state)),
               commandEscape && h("p", { className: "sc-muted", "data-sc-system-note": "" },
                 "⌘ Esc 若被 macOS“游戏叠层”拦截，可在系统设置 → 键盘快捷键 → 调度中心里取消勾选“游戏叠层”，或改用 ⌥ Esc / ⌃ Esc。"),
-              recording && h("input", { ref: capture, className: "sc-capture", readOnly: true, value: "", placeholder: "按下组合键 · Esc 取消", "aria-label": "录制回到快捷模式快捷键", onKeyDown: record }),
+              recording && h("input", { ref: capture, className: "sc-capture", readOnly: true, value: "", placeholder: "按下组合键 · Esc 取消", "aria-label": "录制回到快捷模式快捷键",
+                onKeyDown: record, onKeyUp: release, onBlur: () => { heldBinding.current = undefined; } }),
               candidate && h("div", { className: "sc-native-row" },
                 h("span", null, "新组合：", candidate.keys.join(" ")),
                 h("button", { type: "button", disabled: busy, onClick: () => candidate && applyNative({ type: "set", id: RETURN_ID, binding: candidate.binding }) }, "保存组合"),
@@ -891,8 +932,7 @@ window.__ModuleLoader__.load({
               || context.scope || ["menu", "modal", "inactive", "composition"].includes(context.reason)) {
               cancelPending(); return;
             }
-            const input = [...document.querySelectorAll("[data-dockkit-pane] input")]
-              .find(el => inPaneTarget(pending.toolTarget, el) && isNavigationInput(el));
+            const input = browserAddress(pending.toolTarget);
             if (!input) return;
             cancelPending(); manualNavigation = false;
             input.focus({ preventScroll: true }); input.select?.();
@@ -997,6 +1037,14 @@ window.__ModuleLoader__.load({
           notice && h("div", { role: "status", className: "sc-notice" }, notice));
       }
 
+      // Older hosts keep the metadata switcher when the status service is absent.
+      ctx.inject(["uiSession", "uiSession.sessionStatus"], scope => {
+        scope.effect(() => {
+          sessionStatus = scope.uiSession.sessionStatus;
+          publish(true);
+          return () => { sessionStatus = undefined; publish(true); };
+        }, "shortcutter.session-status");
+      });
       ctx.effect(() => {
         const style = document.createElement("style"); style.dataset.shortcutter = ""; style.textContent = STYLE; document.head.append(style);
         return () => style.remove();
@@ -1057,6 +1105,18 @@ window.__ModuleLoader__.load({
         }
         if (!navigating && inEditableOrContent) return;
         const context = navigationObserver?.refresh() || navigationContext();
+        if (context.reason === "modal" && context.sidebarDrawer?.contains(c.target)
+          && c.target === context.active && (config.autoNavigate || manualNavigation)
+          && !inEditableOrContent && !nativeNavigationKey(c.target, g.code)) {
+          // A drawer owns its keys. Only the user's sidebar toggle can close it here.
+          const key = tokenFromGesture(g), binding = config.bindings.sidebar;
+          if (key && binding === (prefix ? `${prefix} ${key}` : key)) {
+            input.consume(); clearPrefixTimers(); run("sidebar");
+          } else if (key && binding.startsWith(key + " ")) {
+            input.consume(); enterPrefix(key, false);
+          } else if (prefix) { prefix = ""; clearPrefixTimers(); }
+          return;
+        }
         if (["menu", "modal", "inactive", "composition"].includes(context.reason)) return;
         if (!context.navigating || c.target !== document.activeElement || nativeNavigationKey(c.target, g.code)) return;
         const result = resolveSequence(config.bindings, prefix, tokenFromGesture(g));
@@ -1133,7 +1193,7 @@ window.__ModuleLoader__.load({
               && (node.matches(markers) || node.querySelector(markers)))))) schedule();
         });
         observer.observe(document.body, { subtree: true, childList: true, attributes: true,
-          attributeFilter: ["aria-selected", "data-dockkit-pane-active", "data-dockkit-float-active", "data-sidebar-right-open"] });
+          attributeFilter: ["aria-selected", "data-dockkit-pane-active", "data-dockkit-float-active", "data-sidebar-right-open", "data-sidebar-right-tab"] });
         const focused = event => {
           const captured = ctx.sidebarRight.focusedTarget(event.target);
           if (captured) toolHistory.remember(captured.sessionId, captured.tabId, tabs());
