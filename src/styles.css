@@ -55,6 +55,8 @@ body[data-ds-dark-theme] .sc-root kbd.sc-tab-badge { color: #171922; border-colo
 .sc-panel-footer { display: flex; justify-content: space-between; gap: 12px; font-size: 10px; color: var(--sc-muted); margin-top: 12px; }
 .sc-peek { display: flex; align-items: center; gap: 9px; padding: 7px 10px; border-radius: 9px; }
 .sc-notice { max-width: min(420px, calc(100vw - 36px)); bottom: 306px; padding: 10px 14px; font-size: 12px; }
+.sc-notice[data-sc-compact] { bottom: 18px; max-width: min(360px, calc(100vw - 36px)); padding: 7px 12px; border-radius: 10px; pointer-events: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; animation: sc-appear .13s ease-out; }
+.sc-panel ~ .sc-notice[data-sc-compact] { bottom: 306px; }
 .sc-dialog { pointer-events: auto; margin: auto; padding: 0; width: min(590px, calc(100vw - 40px)); max-height: min(780px, calc(100vh - 64px)); color: var(--sc-fg); background: var(--sc-bg); border: 1px solid var(--sc-line); border-radius: 16px; box-shadow: 0 20px 90px #0004; }
 .sc-dialog[open] { display: flex; flex-direction: column; }
 .sc-dialog::backdrop { background: #10141c38; backdrop-filter: blur(3px); }
@@ -149,6 +151,6 @@ body[data-ds-dark-theme] .sc-root kbd.sc-tab-badge { color: #171922; border-colo
 .sc-preferences .sc-primary { background: var(--sc-accent); border-color: transparent; color: #fff; padding: 6px 14px; font-size: 13px; }
 .sc-preferences .sc-primary:hover { background: var(--sc-accent); filter: brightness(.95); }
 @keyframes sc-appear { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: translateY(0); } }
-@media (prefers-reduced-motion: reduce) { .sc-panel, .sc-focus-cue::before { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .sc-panel, .sc-notice[data-sc-compact], .sc-focus-cue::before { animation: none; } }
 @media (max-width: 560px) { .sc-binding-grid { grid-template-columns: 1fr; } }
 @media (max-width: 480px) { .sc-dialog { width: calc(100vw - 20px); max-height: calc(100vh - 24px); } .sc-dialog-header, .sc-settings-body, .sc-dialog-footer { padding-left: 16px; padding-right: 16px; } }

@@ -1,6 +1,7 @@
 // Stable compatibility identifiers: keep existing custom return keys and
 // local preferences when upgrading from dsh-magic-shortcuts to dsh-shortcutter.
 export const RETURN_ID = "magic-shortcuts.navigate";
+export const COPY_URL_ID = "shortcutter.copyUrl";
 export const STORAGE_KEY = "dsh.magic-shortcuts.v1";
 export const COMMANDS = [
   { id: "sidebar", label: "切换侧栏", key: "s", group: "区域" },
@@ -171,4 +172,23 @@ export function resolveSequence(bindings, prefix, key) {
 export function cycleIndex(length, currentIndex, direction) {
   if (!length) return -1;
   return (Math.max(0, currentIndex) + direction + length) % length;
+}
+export function normalizeHttpUrl(value) {
+  if (typeof value !== "string") return "";
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  try {
+    const parsed = new URL(trimmed);
+    return parsed.protocol === "http:" || parsed.protocol === "https:" ? parsed.href : "";
+  } catch {
+    return "";
+  }
+}
+export function formatCopiedUrlToast(url) {
+  try {
+    const host = new URL(url).host;
+    return host ? `已复制网址 · ${host}` : "已复制当前网址";
+  } catch {
+    return "已复制当前网址";
+  }
 }

@@ -593,7 +593,7 @@ export async function pluginChecks(createPage) {
   const nativeStatus = page => page.locator('.sc-preference-section .sc-status').first().innerText();
   await check('⌥ Esc is the single default return shortcut, with one-click ⌃ Esc switch and no primary/alternate split', async page => {
     await ready(page);
-    assert.deepEqual(await page.evaluate(() => [...window.fixture.commands.keys()]), [PRIMARY]);
+    assert.deepEqual(await page.evaluate(() => [...window.fixture.commands.keys()]), [PRIMARY, 'shortcutter.copyUrl']);
     await page.locator('#composer').focus(); await settle(page);
     assert.equal(await page.evaluate(() => window.pluginState().navigating), false);
     assert.equal(await page.evaluate(() => window.fixture.navigate()), 'handled'); await ready(page);
@@ -1234,5 +1234,123 @@ export async function pluginChecks(createPage) {
     assert.equal(await page.getByLabel('上一个工具标签').inputValue(), '[');
     assert.equal(await page.getByLabel('下一个工具标签').inputValue(), ']');
   });
+  await check('Shift+Cmd+C copies browser URL from focused webview without stealing focus and falls back past about:blank', async page => {
+    await unfocusedWebview(page);
+    await freezeClock(page);
+    await page.evaluate(() => {
+      document.getElementById('address').value = 'https://fallback.example/path';
+      window.testWebview.getURL = () => 'https://github.com/bywangdong/dsh-shortcutter';
+      Object.defineProperty(navigator, 'clipboard', {
+        configurable: true,
+        value: { writeText: () => Promise.reject(new DOMException('Document is not focused.', 'NotAllowedError')) }
+      });
+      window.copiedPayloads = [];
+      document.execCommand = command => {
+        if (command !== 'copy') return false;
+        const data = new DataTransfer();
+        const setData = data.setData.bind(data);
+        data.setData = (type, value) => {
+          if (type === 'text/plain') window.copiedPayloads.push(value);
+          return setData(type, value);
+        };
+        const event = new ClipboardEvent('copy', { bubbles: true, cancelable: true, clipboardData: data });
+        document.dispatchEvent(event);
+        return true;
+      };
+      document.getElementById('frame').setAttribute('data-rightbar-fullscreen', '');
+      document.querySelector('[data-sidebar-right-panel]').dataset.sidebarRightPanel = 'fullscreen';
+    });
+    assert.equal(await page.evaluate(() => window.fixture.navigate({ source: 'webview', target: window.testWebview }, 'shortcutter.copyUrl')), 'handled');
+    await advance(page, 20);
+    assert.deepEqual(await page.evaluate(() => window.copiedPayloads), ['https://github.com/bywangdong/dsh-shortcutter']);
+    assert.equal(await page.evaluate(() => window.outerFocusCalls), 0);
+    assert.equal(await page.evaluate(() => document.activeElement === window.testWebview), true);
+    assert.equal(await page.locator('.sc-notice[data-sc-compact]').textContent(), '已复制网址 · github.com');
+    const aboveFullscreen = await page.locator('.sc-notice[data-sc-compact]').evaluate(el => getComputedStyle(el).zIndex);
+    assert.equal(aboveFullscreen, '100');
+    await advance(page, 1650);
+    assert.equal(await page.locator('.sc-notice').count(), 0);
+
+    await page.evaluate(() => { window.testWebview.getURL = () => 'about:blank#lease-123'; });
+    assert.equal(await page.evaluate(() => window.fixture.navigate({ source: 'webview', target: window.testWebview }, 'shortcutter.copyUrl')), 'handled');
+    await advance(page, 20);
+    assert.deepEqual(await page.evaluate(() => window.copiedPayloads.at(-1)), 'https://fallback.example/path');
+    assert.equal(await page.locator('.sc-notice[data-sc-compact]').textContent(), '已复制网址 · fallback.example');
+  });
+  await check('Shift+Cmd+C copies visible browser URL while typing in composer without disturbing selection', async page => {
+    await ready(page);
+    await page.evaluate(() => {
+      document.getElementById('address').value = 'https://docs.example.org/guide?page=2';
+      window.asyncCopied = [];
+      Object.defineProperty(navigator, 'clipboard', {
+        configurable: true,
+        value: { writeText: text => { window.asyncCopied.push(text); return Promise.resolve(); } }
+      });
+      const composer = document.getElementById('composer');
+      composer.focus();
+      composer.setSelectionRange(1, 4);
+    });
+    await settle(page);
+    assert.equal(await page.evaluate(() => window.fixture.navigate({ target: document.getElementById('composer') }, 'shortcutter.copyUrl')), 'handled');
+    await settle(page);
+    assert.deepEqual(await page.evaluate(() => window.asyncCopied), ['https://docs.example.org/guide?page=2']);
+    assert.deepEqual(await page.evaluate(() => {
+      const composer = document.getElementById('composer');
+      return {
+        id: document.activeElement?.id,
+        value: composer.value,
+        start: composer.selectionStart,
+        end: composer.selectionEnd,
+        navigating: window.pluginState().navigating
+      };
+    }), { id: 'composer', value: 'draft', start: 1, end: 4, navigating: false });
+    assert.equal(await page.locator('.sc-notice[data-sc-compact]').textContent(), '已复制网址 · docs.example.org');
+  });
+  await check('Shift+Cmd+C handles collapsed panel, non-browser tabs, blank pages, blocked overlays, and settings display', async page => {
+    await ready(page);
+    await page.evaluate(() => {
+      window.asyncCopied = [];
+      Object.defineProperty(navigator, 'clipboard', {
+        configurable: true,
+        value: { writeText: text => { window.asyncCopied.push(text); return Promise.resolve(); } }
+      });
+      document.getElementById('address').value = 'draft';
+    });
+    assert.equal(await page.evaluate(() => window.fixture.navigate({}, 'shortcutter.copyUrl')), 'handled');
+    await settle(page);
+    assert.equal(await page.locator('.sc-notice[data-sc-compact]').textContent(), '当前浏览器还没有可复制的网址。');
+    assert.deepEqual(await page.evaluate(() => window.asyncCopied), []);
+
+    await page.evaluate(() => { document.getElementById('address').value = 'https://hidden.example.com'; });
+    await key(page, 'KeyE'); await ready(page);
+    assert.equal(await page.evaluate(() => window.fixture.navigate({}, 'shortcutter.copyUrl')), 'handled');
+    await settle(page);
+    assert.equal(await page.locator('.sc-notice[data-sc-compact]').textContent(), '当前没有打开的浏览器。');
+
+    await key(page, 'KeyB'); await ready(page);
+    await key(page, 'KeyB'); await ready(page);
+    assert.equal(await page.evaluate(() => window.fixture.sidebarRight.isExpanded()), false);
+    assert.equal(await page.evaluate(() => window.fixture.navigate({}, 'shortcutter.copyUrl')), 'handled');
+    await settle(page);
+    assert.equal(await page.locator('.sc-notice[data-sc-compact]').textContent(), '当前没有打开的浏览器。');
+    assert.deepEqual(await page.evaluate(() => window.asyncCopied), []);
+
+    // Blocking conditions: SessionSearch dialog, menu, hidden document, and unverified webview.
+    await key(page, 'KeyF'); await page.getByRole('combobox').waitFor();
+    assert.equal(await page.evaluate(() => window.fixture.navigate({}, 'shortcutter.copyUrl')), 'blocked');
+    await page.keyboard.press('Escape'); await ready(page);
+
+    await page.evaluate(() => { const menu = document.createElement('div'); menu.id = 'copy-menu'; menu.role = 'menu'; document.body.append(menu); });
+    await settle(page);
+    assert.equal(await page.evaluate(() => window.fixture.navigate({}, 'shortcutter.copyUrl')), 'blocked');
+    await page.evaluate(() => document.getElementById('copy-menu').remove());
+
+    await page.evaluate(() => Object.defineProperty(document, 'hidden', { configurable: true, value: true }));
+    assert.equal(await page.evaluate(() => window.fixture.navigate({}, 'shortcutter.copyUrl')), 'blocked');
+    await page.evaluate(() => { delete document.hidden; });
+
+    await page.evaluate(() => window.fixture.preferences()); await settle(page);
+    assert.equal(await page.locator('[data-sc-copy-url="shortcutter.copyUrl"]').innerText(), '⇧ ⌘ C');
+  }, { initialTabs: [{ sessionId: 's1', tabId: 'b1', kind: 'browser' }, { sessionId: 's1', tabId: 'f1', kind: 'files' }] });
   return { passed: results.filter(result => result.pass).length, total: results.length, results };
 }

@@ -19,7 +19,10 @@ window.__ModuleLoader__.load({
     const HINT_VISIBLE_MS = 2000;
     const HINT_RESUME_MS = 800;
     const PREFIX_TIMEOUT_MS = 4000;
+    const NOTICE_MS = 4200;
+    const TOAST_MS = 1600;
     const DEFAULT_RETURN_BINDING = { code: "Escape", modifiers: ["alt"] };
+    const DEFAULT_COPY_URL_BINDING = { code: "KeyC", modifiers: ["primary", "shift"] };
     const pendingLabels = new Map([["approval", "待审批"], ["plan-review", "待审方案"], ["question", "待回答"]]);
     const RETURN_PRESETS = [
       { key: "default", label: "⌥ Esc（默认）", reset: true, binding: DEFAULT_RETURN_BINDING },
@@ -37,7 +40,7 @@ window.__ModuleLoader__.load({
       let entryHint = false, hintDelayTimer, hintTimer, hintDeadline = 0, hintRemaining = 0, hoverPoint;
       let prefixShown = false, prefixToken = 0, prefixShowTimer, prefixExpireTimer;
       let firstNavigation = true, seenSession = false, inputReset = 0, resetTimer;
-      let lastSession, previousSession, notice = "", noticeTimer, returnElement;
+      let lastSession, previousSession, notice = "", noticeCompact = false, noticeTimer, returnElement;
       let searchRequest, searchDialog, sessionStatus, sessionHistory = [];
       let raw = null, storageError = "", config = defaultConfig(), stopRecording = () => {};
       const listeners = new Set();
@@ -54,7 +57,7 @@ window.__ModuleLoader__.load({
         const active = ctx.sidebarRight.active();
         // Targets are fresh host objects: compare their occurrence and navigation
         // identity, not the wrapper. A pending view commit can explicitly wake us.
-        const next = [navigating, hints, entryHint, prefix, prefixShown, area, activePanel(), navigationScope, pending, notice,
+        const next = [navigating, hints, entryHint, prefix, prefixShown, area, activePanel(), navigationScope, pending, notice, noticeCompact,
           config, raw, storageError, searchRequest, mounted(), active?.id, active?.kind, active?.contentId,
           ctx.sidebarRight.isExpanded(), target?.sessionId, target?.paneId, target?.host,
           target?.tabId, target?.occurrence, target?.navigationRevision];
@@ -129,11 +132,12 @@ window.__ModuleLoader__.load({
         return { frame, right, conversation, sidebar };
       };
       const returnRow = () => ctx.shortcuts.catalog.getSnapshot().find(row => row.id === RETURN_ID);
+      const copyUrlRow = () => ctx.shortcuts.catalog.getSnapshot().find(row => row.id === COPY_URL_ID);
       const returnUsable = row => !!row?.binding && !row.issue && !row.conflicts?.length;
       const returnLabel = () => { const row = returnRow(); return returnUsable(row) ? row.keys.join(" ") : "未绑定"; };
-      const tell = text => {
-        notice = text; clearTimeout(noticeTimer); publish();
-        noticeTimer = setTimeout(() => { notice = ""; publish(); }, 4200);
+      const tell = (text, compact = false) => {
+        notice = text; noticeCompact = compact; clearTimeout(noticeTimer); publish();
+        noticeTimer = setTimeout(() => { notice = ""; noticeCompact = false; publish(); }, compact ? TOAST_MS : NOTICE_MS);
       };
       const cancelPending = () => {
         clearTimeout(pendingTimer);
@@ -251,6 +255,94 @@ window.__ModuleLoader__.load({
       };
       const browserAddress = captured => [...document.querySelectorAll("[data-sidebar-right-tab] form input")]
         .find(el => inPaneTarget(captured, el) && isNavigationInput(el));
+      const visibleBrowserContainers = sessionId => {
+        const browserIds = new Set(tabs().filter(t => t.kind === "browser").map(t => t.tabId));
+        const byTab = new Map();
+        for (const el of document.querySelectorAll("[data-sidebar-right-tab], [data-dockkit-content]")) {
+          const tabId = el.dataset.sidebarRightTab || el.dataset.dockkitContent;
+          if (!tabId || !browserIds.has(tabId) || !visible(el)) continue;
+          const ownerSession = ctx.sidebarRight.focusedTarget(el)?.sessionId
+            ?? el.closest("[data-sidebar-right-session]")?.getAttribute("data-sidebar-right-session");
+          if (ownerSession !== sessionId) continue;
+          if (!byTab.has(tabId) || el.hasAttribute("data-dockkit-content")) byTab.set(tabId, el);
+        }
+        return [...byTab.entries()].map(([tabId, el]) => ({ tabId, el }));
+      };
+      const resolveBrowserContainer = input => {
+        const sessionId = mounted();
+        if (!sessionId || activePanel()) return null;
+        const containers = visibleBrowserContainers(sessionId);
+        if (!containers.length) return null;
+        const origin = input?.target instanceof Element ? input.target : document.activeElement;
+        const focused = origin && ctx.sidebarRight.focusedTarget(origin);
+        if (focused?.sessionId === sessionId) {
+          const hit = containers.find(c => c.tabId === focused.tabId);
+          if (hit) return hit.el;
+        }
+        if (area === "browser" && target?.sessionId === sessionId) {
+          const hit = containers.find(c => c.tabId === target.tabId);
+          if (hit) return hit.el;
+        }
+        const activeTab = ctx.sidebarRight.active();
+        if (activeTab?.kind === "browser") {
+          const hit = containers.find(c => c.tabId === activeTab.id);
+          if (hit) return hit.el;
+        }
+        const visibleTabs = containers.map(c => ({ sessionId, tabId: c.tabId, kind: "browser" }));
+        const recent = toolHistory.find(sessionId, "browser", visibleTabs);
+        return containers.find(c => c.tabId === recent?.tabId)?.el || containers[0].el;
+      };
+      const readBrowserUrl = container => {
+        const webview = container.querySelector("webview[data-sidebar-browser-frame]");
+        if (typeof webview?.getURL === "function") {
+          try {
+            const url = normalizeHttpUrl(webview.getURL());
+            if (url) return url;
+          } catch {}
+        }
+        const addressInput = [...container.querySelectorAll("form input")].find(el => isNavigationInput(el));
+        const draftUrl = normalizeHttpUrl(addressInput?.value);
+        if (draftUrl) return draftUrl;
+        const iframe = container.querySelector("iframe[data-sidebar-browser-frame]");
+        const iframeUrl = normalizeHttpUrl(iframe?.getAttribute("src"));
+        if (iframeUrl) return iframeUrl;
+        return [...container.querySelectorAll("section p")].map(el => normalizeHttpUrl(el.textContent)).find(Boolean) || "";
+      };
+      // Preserve focus and selection inside <webview> or composer when async Clipboard API rejects.
+      const writeClipboard = async text => {
+        try {
+          if (navigator.clipboard?.writeText) {
+            await navigator.clipboard.writeText(text);
+            return true;
+          }
+        } catch {}
+        let copied = false;
+        const onCopy = event => {
+          if (!event.clipboardData) return;
+          event.clipboardData.setData("text/plain", text);
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          copied = true;
+        };
+        document.addEventListener("copy", onCopy, true);
+        try {
+          return document.execCommand("copy") || copied;
+        } catch {
+          return false;
+        } finally {
+          document.removeEventListener("copy", onCopy, true);
+        }
+      };
+      const copyBrowserUrl = async input => {
+        const container = resolveBrowserContainer(input);
+        if (!container) { tell("当前没有打开的浏览器。", true); return; }
+        const url = readBrowserUrl(container);
+        if (!url) { tell("当前浏览器还没有可复制的网址。", true); return; }
+        const ok = await writeClipboard(url);
+        if (!alive) return;
+        if (ok) tell(formatCopiedUrlToast(url), true);
+        else tell("无法写入剪贴板，请手动复制地址栏。");
+      };
       const saveConfig = (candidate, expected) => {
         const result = validateConfig(candidate);
         if (result.error) return result.error;
@@ -861,6 +953,8 @@ window.__ModuleLoader__.load({
         };
         const row = returnRow();
         const state = !row ? "未注册" : !row.binding ? "" : row.conflicts?.length ? "与其他快捷键冲突，未启用" : row.issue ? "不可用" : "";
+        const copyRow = copyUrlRow();
+        const copyState = !copyRow ? "未注册" : !copyRow.binding ? "" : copyRow.conflicts?.length ? "与其他快捷键冲突，未启用" : copyRow.issue ? "不可用" : "";
         const matchedPreset = row?.binding && RETURN_PRESETS.find(preset => sameBinding(row.binding, preset.binding))?.key;
         const commandEscape = !row?.binding?.secondCode && row?.binding?.code === "Escape" && row.binding.modifiers?.length === 1 && ["meta", "primary"].includes(row.binding.modifiers[0]);
         const groups = ["区域", "操作", "跳转"];
@@ -883,6 +977,12 @@ window.__ModuleLoader__.load({
                 h("button", { type: "button", disabled: busy, onClick: () => candidate && applyNative({ type: "set", id: RETURN_ID, binding: candidate.binding }) }, "保存组合"),
                 h("button", { type: "button", disabled: busy, onClick: () => { setCandidate(undefined); setNativeMessage(""); } }, "取消")),
               h("p", { className: "sc-status", role: "status" }, nativeMessage)),
+            h("section", { className: "sc-preference-section" },
+              h("h3", null, "复制浏览器网址"),
+              h("p", null, "在网页内、地址栏或对话输入时直接复制当前打开的浏览器网址，不改变焦点（可在 DSH 快捷键设置中修改）。"),
+              h("div", { className: "sc-native-row" },
+                h("span", { className: "sc-native-key", "data-sc-copy-url": COPY_URL_ID }, copyRow?.binding ? copyRow.keys.join(" ") : "未绑定"),
+                copyState && h("span", { className: "sc-muted" }, copyState))),
             h("section", { className: "sc-preference-section" },
               h("h3", null, "触发方式"),
               h("label", { className: "sc-check" },
@@ -1024,7 +1124,8 @@ window.__ModuleLoader__.load({
               items.map(c => h("button", { type: "button", className: "sc-key-row", key: c.id, "data-sc-command": c.id, onPointerDown: keepFocus, onClick: () => run(c.id) }, h("span", { className: "sc-keys" }, keyCaps(prefix ? config.bindings[c.id].split(" ")[1] : config.bindings[c.id])), h("span", null, c.id === "closeTab" ? (navigationScope ? "关闭设置" : activePanel() ? "关闭当前页面" : "关闭当前工具标签") : c.label))),
               gTabCount > 0 && h("button", { type: "button", className: "sc-key-row", key: "tab-digits", "data-sc-command": "tab:0", onPointerDown: keepFocus, onClick: () => run("tab:0") }, h("span", { className: "sc-keys" }, keyCaps(gTabCount > 1 ? `1-${gTabCount}` : "1")), h("span", null, "切换工具标签"))),
             !prefix && h("div", { className: "sc-prefix-row" }, [ ["n", "新建"], ["g", "跳转"] ].map(([key, label]) => h("button", { type: "button", key, onPointerDown: keepFocus, onClick: () => { clearHint(); enterPrefix(key, true); hints = false; focusScopeAnchor(navigationScope).focus({ preventScroll: true }); publish(); } }, h("span", { className: "sc-keys" }, keyCaps(key)), label, h("span", { className: "sc-chevron", "aria-hidden": true }, "›")))),
-            h("footer", { className: "sc-panel-footer" }, h("span", null, prefix === "n" ? "新建后直接进入输入" : prefix ? "依次按键" : navigationScope ? "设置内 Esc 回到快捷模式或关闭" : area === "sidebar" ? "侧栏内 Esc 回到快捷模式" : area === "conversation" ? (activePanel() ? "页内 Esc 回到快捷模式" : "对话内 Esc 回到快捷模式") : `${returnLabel()} 回到快捷模式`), h("span", null, "esc ", prefix ? "返回" : "收起"))));
+            h("footer", { className: "sc-panel-footer" }, h("span", null, prefix === "n" ? "新建后直接进入输入" : prefix ? "依次按键" : navigationScope ? "设置内 Esc 回到快捷模式或关闭" : area === "sidebar" ? "侧栏内 Esc 回到快捷模式" : area === "conversation" ? (activePanel() ? "页内 Esc 回到快捷模式" : "对话内 Esc 回到快捷模式") : `${returnLabel()} 回到快捷模式`), h("span", null, "esc ", prefix ? "返回" : "收起"))),
+          notice && h("div", { role: "status", className: "sc-notice", "data-sc-compact": noticeCompact ? "" : undefined }, notice));
         return h("div", { className: "sc-root", ref: el => { root = el; }, "data-sc-navigation": navigating ? "true" : "false", "data-sc-area": surfaceArea(), "data-sc-prefix": prefix },
           h("div", { id: "sc-navigation-anchor", ref: el => { anchor = el; }, className: "sc-anchor", tabIndex: -1, role: "group", "aria-label": `快捷模式，按 ? 显示快捷键，${config.bindings.enter || "点击"}进入内容` }),
           // shell.overlay is below fullscreen tools (20 vs 40). Keep our anchor
@@ -1033,8 +1134,7 @@ window.__ModuleLoader__.load({
           // need their own modal top layer.
           createPortal(overlay, navigationScope || document.body),
           searchRequest && h(SessionSearch, { key: searchRequest.id, request: searchRequest }),
-          !navigating && !available && h("button", { type: "button", className: "sc-peek", onClick: () => take(undefined, true, null, true) }, "回到快捷模式"),
-          notice && h("div", { role: "status", className: "sc-notice" }, notice));
+          !navigating && !available && h("button", { type: "button", className: "sc-peek", onClick: () => take(undefined, true, null, true) }, "回到快捷模式"));
       }
 
       // Older hosts keep the metadata switcher when the status service is absent.
@@ -1073,6 +1173,26 @@ window.__ModuleLoader__.load({
           catch { return () => {}; }
         }
       }, "shortcutter.return");
+      ctx.effect(() => {
+        const command = {
+          id: COPY_URL_ID, label: () => "Shortcutter · 复制浏览器网址",
+          aliases: ["copy url", "copy browser url", "复制网址", "复制浏览器网址"],
+          defaults: { "desktop:macos": DEFAULT_COPY_URL_BINDING },
+          regions: ["page", "editable", "terminal"], modals: [],
+          resolve: input => {
+            const nativeWebviewTarget = input?.source === "webview" ? input.target : null;
+            const context = navigationContext({ nativeWebviewTarget });
+            return context.scope || ["menu", "modal", "inactive", "composition"].includes(context.reason)
+              ? { status: "blocked", reason: "modal" }
+              : { status: "handled", run: () => { void copyBrowserUrl(input); } };
+          }
+        };
+        try { return ctx.shortcuts.register(command); }
+        catch {
+          try { return ctx.shortcuts.register({ ...command, defaults: {} }); }
+          catch { return () => {}; }
+        }
+      }, "shortcutter.copy-url");
       ctx.effect(() => ctx.shortcuts.observeFixedInput(input => {
         if (input.type === "reset") {
           // The host also resets on pointerdown/focusin. Let our own controls

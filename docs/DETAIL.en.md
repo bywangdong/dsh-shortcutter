@@ -1,4 +1,4 @@
-- **Toggle & create**: Press `b` / `t` / `e` to toggle Browser, Terminal, or Files; `n c` / `n b` / `n t` to create and focus input immediately; `i` to enter content.
+- **Toggle & create**: Press `b` / `t` / `e` to toggle Browser, Terminal, or Files; `n c` / `n b` / `n t` to create and focus input immediately; `i` to enter content. On macOS, press `⇧ ⌘ C` to copy the open browser's URL without moving focus.
 - **Return to Shortcut Mode**: Press `Esc` on standard surfaces and the address bar, or `⌥ Esc` inside terminals and web pages.
 - **Tabs & jumps**: Press `Tab` / `⇧ Tab` to cycle tabs, `g` for live tab numbers (`1`–`9`) and global jumps, or `?` to toggle key hints.
 - **Session search.** Press `f` for recent sessions or type part of a title or workspace name for fuzzy matches. On hosts with session status, press `Tab` to reach the filters and `←` / `→` to choose all, pending, or unread sessions. Use `↑` / `↓` to select, `Enter` to open, or `Esc` to return.

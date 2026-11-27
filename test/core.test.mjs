@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { defaultConfig, validateConfig, readConfig, resolveSequence, tokenFromGesture, cycleIndex, normalizeSequence } from '../src/core.js';
+import { COPY_URL_ID, defaultConfig, validateConfig, readConfig, resolveSequence, tokenFromGesture, cycleIndex, normalizeSequence, normalizeHttpUrl, formatCopiedUrlToast } from '../src/core.js';
 const v5Config=()=>{
   const c=defaultConfig();c.version=5;delete c.bindings.searchSessions;
   return c;
@@ -315,4 +315,17 @@ test('Chinese IME full-width punctuation normalizes cleanly in binding configura
   assert.equal(r.config.bindings.previous,'g ?');
   const reserved=defaultConfig();reserved.bindings.files='？';
   assert.match(validateConfig(reserved).error,/保留/);
+});
+test('browser URL normalization and copied toast formatting handle HTTP(S) and ignore non-web addresses',()=>{
+  assert.equal(COPY_URL_ID,'shortcutter.copyUrl');
+  assert.equal(normalizeHttpUrl('https://github.com/bywangdong/dsh-shortcutter'),'https://github.com/bywangdong/dsh-shortcutter');
+  assert.equal(normalizeHttpUrl(' http://localhost:3000/path?a=1 '),'http://localhost:3000/path?a=1');
+  assert.equal(normalizeHttpUrl('about:blank#lease-1'),'');
+  assert.equal(normalizeHttpUrl('javascript:alert(1)'),'');
+  assert.equal(normalizeHttpUrl('file:///Users/nick/test.html'),'');
+  assert.equal(normalizeHttpUrl('draft'),'');
+  assert.equal(normalizeHttpUrl(''),'');
+  assert.equal(formatCopiedUrlToast('https://github.com/bywangdong/dsh-shortcutter'),'已复制网址 · github.com');
+  assert.equal(formatCopiedUrlToast('http://localhost:3000/app'),'已复制网址 · localhost:3000');
+  assert.equal(formatCopiedUrlToast('not-a-url'),'已复制当前网址');
 });
